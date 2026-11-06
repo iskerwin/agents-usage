@@ -1,7 +1,7 @@
 import SwiftUI
 
-// One column grid for every quota row, here and on the agent page, so numbers
-// line up down the whole panel.
+// One column grid for every quota row, here and in the detail panel, so numbers
+// line up.
 private enum Column {
     static let label: CGFloat = 22
     static let percent: CGFloat = 58
@@ -17,9 +17,9 @@ private struct SectionDivider: View {
 
 private extension View {
     /// Highlights under the pointer.
-    func rowHover(id: String, state: PanelState) -> some View {
+    func rowHover(id: String, state: PanelState, selected: Bool = false) -> some View {
         background {
-            if state.hoveredRow == id {
+            if selected || state.hoveredRow == id {
                 RoundedRectangle(cornerRadius: 8).fill(Palette.track)
             }
         }
@@ -30,6 +30,7 @@ private extension View {
 private struct RowButton<Label: View>: View {
     let id: String
     @ObservedObject var state: PanelState
+    var selected = false
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
@@ -40,7 +41,7 @@ private struct RowButton<Label: View>: View {
                 .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .rowHover(id: id, state: state)
+        .rowHover(id: id, state: state, selected: selected)
     }
 }
 
@@ -58,7 +59,7 @@ struct LogoMark: View {
     }
 }
 
-/// Back to the overview, which is the only page without one.
+/// Back to the overview.
 struct PageHeader<Title: View>: View {
     @ObservedObject var state: PanelState
     @ViewBuilder let title: () -> Title
@@ -87,6 +88,7 @@ struct Dashboard: View {
     let busy: Bool
     let budget: Double?
     let onRefresh: () -> Void
+    @ObservedObject var selection: AgentSelection
     @ObservedObject var state: PanelState
 
     var body: some View {
@@ -100,23 +102,31 @@ struct Dashboard: View {
             }
             if let snapshot {
                 VStack(spacing: 2) {
-                    ForEach(snapshot.summaries) { AgentRow(summary: $0, snapshot: snapshot, state: state) }
+                    ForEach(snapshot.summaries) { AgentRow(summary: $0, snapshot: snapshot, selection: selection, state: state) }
                 }
+                tasks(snapshot)
+            } else if error == nil {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 120)
+            }
+            SectionDivider()
+            footer
+        }
+    }
+
+    /// Grows with the tasks up to a limit, then scrolls, so the panel only takes the room it needs.
+    @ViewBuilder
+    private func tasks(_ snapshot: Snapshot) -> some View {
+        if let tasks = snapshot.tasks {
+            if !tasks.isEmpty {
                 SectionDivider()
                 ScrollView {
                     TaskList(snapshot: snapshot, agent: nil, state: state)
                 }
-                .scrollIndicators(.hidden)
-                .frame(maxHeight: .infinity)
-            } else {
-                Spacer(minLength: 0)
-                if error == nil {
-                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
-                }
-                Spacer(minLength: 0)
+                .frame(height: CGFloat(min(tasks.count, Layout.visibleTasks)) * Layout.taskRowHeight)
             }
+        } else {
             SectionDivider()
-            footer
+            TaskList(snapshot: snapshot, agent: nil, state: state)
         }
     }
 
@@ -131,7 +141,10 @@ struct Dashboard: View {
             } else {
                 iconButton("arrow.clockwise", label: tr("刷新", "Refresh"), action: onRefresh)
             }
-            iconButton("gearshape", label: tr("设置", "Settings")) { state.page = .settings }
+            iconButton("gearshape", label: tr("设置", "Settings")) {
+                selection.clear()
+                state.page = .settings
+            }
         }
         .padding(.leading, Column.rowInset)
         .padding(.trailing, 2)
@@ -150,16 +163,16 @@ struct Dashboard: View {
     }
 }
 
-/// One agent at a glance. The whole row opens its page.
+/// One agent at a glance. Pointing at it shows its details beside the panel, and a click keeps them there.
 struct AgentRow: View {
     let summary: AgentSummary
     let snapshot: Snapshot
+    @ObservedObject var selection: AgentSelection
     @ObservedObject var state: PanelState
 
     var body: some View {
-        RowButton(id: "agent-" + summary.id, state: state) {
-            state.hoveredRow = nil
-            state.page = .agent(summary.kind)
+        RowButton(id: "agent-" + summary.id, state: state, selected: selection.shown == summary.kind) {
+            selection.click(summary.kind)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 0) {
@@ -179,6 +192,7 @@ struct AgentRow: View {
             }
             .padding(.vertical, 5)
         }
+        .onHover { selection.hover(summary.kind, inside: $0) }
     }
 }
 
@@ -321,7 +335,7 @@ struct TrendSection: View {
             if let hovered = state.hoveredBar, trend.bars.indices.contains(hovered) {
                 Text(verbatim: "\(trend.bars[hovered].label)  \(compactText(trend.bars[hovered].total))")
             } else {
-                Text(verbatim: "\(compactText(trend.total)) tokens")
+                Text(verbatim: "\(compactText(trend.total)) tokens · " + tr("\(trend.sessions) 次会话", trend.sessions == 1 ? "1 session" : "\(trend.sessions) sessions"))
             }
         }
         .font(.system(size: 12).monospacedDigit())
@@ -391,19 +405,31 @@ struct TaskList: View {
 
     /// The row goes to the terminal, the folder inside it to Finder: a button
     /// wins over the tap around it, and nesting two buttons would not work.
+    /// Details add how long each task has been running.
     private func row(_ task: Snapshot.AgentTask) -> some View {
         HStack(spacing: 0) {
-            HStack(spacing: 0) {
-                if let kind = task.kind {
-                    LogoMark(kind: kind).frame(width: Column.label, alignment: .leading)
-                }
-                Text(task.displayTitle).font(.system(size: 12)).lineLimit(1)
+            if let kind = task.kind {
+                LogoMark(kind: kind).frame(width: Column.label, alignment: .leading)
             }
-            .accessibilityAddTraits(.isButton)
-            Spacer(minLength: 8)
-            projectLink(task)
+            if agent == nil {
+                title(task).accessibilityAddTraits(.isButton)
+                Spacer(minLength: 8)
+                projectLink(task)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    title(task).accessibilityAddTraits(.isButton)
+                    HStack(spacing: 4) {
+                        projectLink(task)
+                        Text(verbatim: "· " + (task.isRunning ? durationText(seconds: snapshot.generatedAt - task.since) : tr("空闲", "Idle")))
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(Palette.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
-        .frame(height: 26)
+        .frame(height: agent == nil ? Layout.taskRowHeight : 40)
         .opacity(task.isRunning ? 1 : 0.5)
         .padding(.horizontal, Column.rowInset)
         .contentShape(Rectangle())
@@ -414,15 +440,19 @@ struct TaskList: View {
         .rowHover(id: "task-\(task.pid)", state: state)
     }
 
+    private func title(_ task: Snapshot.AgentTask) -> some View {
+        Text(task.displayTitle).font(.system(size: 12)).lineLimit(1)
+    }
+
     @ViewBuilder
     private func projectLink(_ task: Snapshot.AgentTask) -> some View {
         let label = HStack(spacing: 3) {
             Image(systemName: "folder").font(.system(size: 10))
-            if task.title != nil { Text(task.projectName).lineLimit(1) }
+            if task.title != nil || agent != nil { Text(task.projectName).lineLimit(1) }
         }
         .font(.system(size: 11))
         .foregroundStyle(Palette.muted)
-        .frame(height: 26)
+        .frame(minHeight: 18)
         .contentShape(Rectangle())
         .help(task.project)
 
@@ -436,7 +466,7 @@ struct TaskList: View {
     }
 }
 
-/// Everything known about one agent.
+/// Everything known about one agent, in a panel of a fixed height that scrolls.
 struct AgentPage: View {
     let kind: AgentKind
     let snapshot: Snapshot
@@ -444,11 +474,13 @@ struct AgentPage: View {
 
     var body: some View {
         let details = AgentDetails(rows: snapshot.usage.rows, kind: kind, today: snapshot.today)
-        VStack(spacing: 4) {
-            PageHeader(state: state) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
                 LogoMark(kind: kind)
-                Text(kind.title)
+                Text(kind.title).font(.system(size: 13, weight: .semibold))
             }
+            .frame(height: 28)
+            .padding(.horizontal, Column.rowInset)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if let summary = snapshot.summaries.first(where: { $0.kind == kind }) {
@@ -463,6 +495,8 @@ struct AgentPage: View {
                         if !details.models.isEmpty { ranking(details.models, symbol: "cpu") }
                         if !details.projects.isEmpty { ranking(details.projects, symbol: "folder", opens: projectFolder) }
                     }
+                    SectionDivider()
+                    activity(details).padding(.horizontal, Column.rowInset)
                     if snapshot.tasks?.contains(where: { $0.kind == kind }) != false {
                         SectionDivider()
                         TaskList(snapshot: snapshot, agent: kind, state: state)
@@ -470,8 +504,26 @@ struct AgentPage: View {
                 }
                 .padding(.bottom, 6)
             }
-            .scrollIndicators(.hidden)
         }
+    }
+
+    private func activity(_ details: AgentDetails) -> some View {
+        VStack(spacing: 4) {
+            fact(tr("本月请求", "Requests this month"), compactText(details.requests))
+            fact(tr("本月会话", "Sessions this month"), compactText(details.sessions))
+            fact(tr("今日输入", "Input today"), compactText(details.today.input))
+            fact(tr("今日输出", "Output today"), compactText(details.today.output))
+            fact(tr("今日缓存命中", "Cache hits today"), details.today.cacheHit.map { percentText($0 * 100) } ?? "—")
+        }
+    }
+
+    private func fact(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label).foregroundStyle(Palette.muted).lineLimit(1)
+            Spacer(minLength: 0)
+            Text(value).lineLimit(1).truncationMode(.middle)
+        }
+        .font(.system(size: 12).monospacedDigit())
     }
 
     private func account(_ account: Snapshot.Account) -> some View {
@@ -493,6 +545,16 @@ struct AgentPage: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            if let manual = account.manualResets {
+                fact(tr("手动重置", "Manual resets"), tr("\(manual) 次可用", "\(manual) available"))
+            }
+            if let source = account.source {
+                fact(tr("数据来源", "Source"), localizedNote(source))
+            }
+            if let captured = account.capturedAt {
+                let age = durationText(seconds: snapshot.generatedAt - captured)
+                fact(tr("更新于", "Updated"), tr("\(age)前", "\(age) ago"))
             }
         }
     }
@@ -584,7 +646,6 @@ struct SettingsPage: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            Spacer(minLength: 0)
             SectionDivider()
             Button(action: onQuit) {
                 Text(tr("退出", "Quit"))

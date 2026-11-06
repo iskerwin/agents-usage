@@ -27,17 +27,16 @@ enum Palette {
     }
 }
 
-enum Layout {
+public enum Layout {
     static let panelWidth: CGFloat = 320
-    // One size for every state: anything taller scrolls inside, so nothing a
-    // click reveals can move the window or the rows above it.
-    static let panelHeight: CGFloat = 440
     static let padding: CGFloat = 6
+    static let taskRowHeight: CGFloat = 26
+    static let visibleTasks = 5
+    public static let detailSize = NSSize(width: 320, height: 480)
 }
 
 public enum PanelPage: Equatable {
     case overview, settings
-    case agent(AgentKind)
 }
 
 // Not @State: in the current SDK that is a macro whose plugin ships with Xcode
@@ -64,6 +63,11 @@ final class PanelState: ObservableObject {
     }
 }
 
+private struct HeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 public struct PanelView: View {
     let snapshot: Snapshot?
     let error: String?
@@ -76,6 +80,8 @@ public struct PanelView: View {
     let onLanguage: (Language) -> Void
     let onRefresh: () -> Void
     let onQuit: () -> Void
+    let onHeight: (CGFloat) -> Void
+    @ObservedObject var selection: AgentSelection
     @StateObject private var state: PanelState
 
     public init(snapshot: Snapshot?, error: String?, busy: Bool,
@@ -83,6 +89,7 @@ public struct PanelView: View {
                 theme: Theme = .system, onTheme: @escaping (Theme) -> Void = { _ in },
                 language: Language = .system, onLanguage: @escaping (Language) -> Void = { _ in },
                 onRefresh: @escaping () -> Void, onQuit: @escaping () -> Void, onDismiss: @escaping () -> Void = {},
+                onHeight: @escaping (CGFloat) -> Void = { _ in }, selection: AgentSelection,
                 page: PanelPage = .overview) {
         self.snapshot = snapshot
         self.error = error
@@ -95,6 +102,8 @@ public struct PanelView: View {
         self.onLanguage = onLanguage
         self.onRefresh = onRefresh
         self.onQuit = onQuit
+        self.onHeight = onHeight
+        self.selection = selection
         _state = StateObject(wrappedValue: PanelState(page: page, onDismiss: onDismiss))
     }
 
@@ -104,21 +113,49 @@ public struct PanelView: View {
             // everything. The state lives above this and survives.
             .id(language)
             .padding(Layout.padding)
-            .frame(width: Layout.panelWidth, height: Layout.panelHeight, alignment: .top)
+            .frame(width: Layout.panelWidth)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
+            .onPreferenceChange(HeightKey.self) { onHeight($0) }
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 
     @ViewBuilder
     private var page: some View {
         switch state.page {
         case .overview:
-            Dashboard(snapshot: snapshot, error: error, busy: busy, budget: budget, onRefresh: onRefresh, state: state)
-        case .agent(let kind):
-            if let snapshot {
-                AgentPage(kind: kind, snapshot: snapshot, state: state)
-            }
+            Dashboard(snapshot: snapshot, error: error, busy: busy, budget: budget, onRefresh: onRefresh,
+                      selection: selection, state: state)
         case .settings:
             SettingsPage(budget: budget, onBudget: onBudget, theme: theme, onTheme: onTheme,
                          language: language, onLanguage: onLanguage, onQuit: onQuit, state: state)
         }
+    }
+}
+
+/// One agent's details. A single view for all of them, so the chosen range carries over.
+public struct DetailPanelView: View {
+    let snapshot: Snapshot?
+    let kind: AgentKind?
+    let language: Language
+    @StateObject private var state: PanelState
+
+    public init(snapshot: Snapshot?, kind: AgentKind?, language: Language = .system, onDismiss: @escaping () -> Void = {}) {
+        self.snapshot = snapshot
+        self.kind = kind
+        self.language = language
+        _state = StateObject(wrappedValue: PanelState(page: .overview, onDismiss: onDismiss))
+    }
+
+    public var body: some View {
+        Group {
+            if let snapshot, let kind {
+                // Each agent starts scrolled to the top.
+                AgentPage(kind: kind, snapshot: snapshot, state: state).id(kind)
+            }
+        }
+        .id(language)
+        .padding(Layout.padding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }

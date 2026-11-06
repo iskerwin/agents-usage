@@ -53,6 +53,9 @@ func localizedNote(_ note: String) -> String {
         ("接口没有返回每周配额", "The API returned no weekly quota"),
         ("未找到 codex 命令", "codex command not found"),
         ("无法读取实时配额", "Live quota unavailable"),
+        ("Claude statusLine 快照", "Claude statusLine snapshot"),
+        ("Codex 会话日志", "Codex session log"),
+        ("Grok CLI 用量接口", "Grok CLI usage API"),
         ("（", " ("), ("）", ")"), ("；", "; "),
     ]
     return known.reduce(note) { $0.replacingOccurrences(of: $1.0, with: $1.1) }

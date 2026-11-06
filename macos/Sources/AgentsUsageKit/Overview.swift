@@ -52,6 +52,22 @@ public struct AgentSummary: Identifiable {
     }
 }
 
+public struct TokenTotals: Equatable {
+    public let input: Int  // everything sent but cache reads, so input + output is the billable metric
+    public let output: Int
+    public let cacheHit: Double?  // nil without any input tokens
+
+    init(rows: [Snapshot.Row]) {
+        let fresh = rows.reduce(0) { $0 + $1.fresh }
+        let cacheWrite = rows.reduce(0) { $0 + $1.cacheWrite }
+        let cacheRead = rows.reduce(0) { $0 + $1.cacheRead }
+        input = fresh + cacheWrite
+        output = rows.reduce(0) { $0 + $1.output }
+        let sent = fresh + cacheWrite + cacheRead
+        cacheHit = sent > 0 ? Double(cacheRead) / Double(sent) : nil
+    }
+}
+
 /// API list prices applied to the logged tokens. nil means tokens exist but
 /// none has a known price, which is not the same as costing nothing.
 public struct CostSummary {
@@ -73,7 +89,7 @@ public struct CostSummary {
     }
 }
 
-/// One agent's costs, and where its month's tokens went.
+/// One agent's costs and activity, and where its month's tokens went.
 public struct AgentDetails {
     public struct Entry: Identifiable, Equatable {
         public let name: String
@@ -85,6 +101,9 @@ public struct AgentDetails {
     static let rankingLimit = 4
 
     public let costs: CostSummary
+    public let today: TokenTotals
+    public let requests: Int
+    public let sessions: Int
     public let models: [Entry]
     public let projects: [Entry]
 
@@ -93,6 +112,9 @@ public struct AgentDetails {
         let own = rows.filter { $0.agent == kind.rawValue }
         let month = own.filter { $0.date.hasPrefix(monthPrefix) }
         costs = CostSummary(rows: own, today: today)
+        self.today = TokenTotals(rows: own.filter { $0.date == today })
+        requests = month.reduce(0) { $0 + $1.requests }
+        sessions = Set(month.flatMap(\.sessions)).count
         models = Self.ranking(month, key: \.model)
         projects = Self.ranking(month, key: \.project)
     }
@@ -133,8 +155,10 @@ public struct TrendBar: Identifiable, Equatable {
 public struct Trend {
     public let bars: [TrendBar]
     public let total: Int
+    public let sessions: Int
 
     public init(usage: Snapshot.Usage, range: TrendRange, agent: AgentKind, now: Int) {
+        var sessions = Set<Int>()
         var bars: [TrendBar] = []
         switch range {
         case .day:
@@ -145,6 +169,7 @@ public struct Trend {
             for index in 0..<24 {
                 let start = current - (23 - index) * 3600
                 let rows = hours.filter { $0.hour == start }
+                sessions.formUnion(rows.flatMap(\.sessions))
                 bars.append(TrendBar(id: index, label: hourText(epoch: start, now: now),
                                      total: rows.reduce(0) { $0 + $1.billable }))
             }
@@ -153,10 +178,12 @@ public struct Trend {
             let own = usage.rows.filter { $0.agent == agent.rawValue }
             for (index, date) in dates.enumerated() {
                 let rows = own.filter { $0.date == date }
+                sessions.formUnion(rows.flatMap(\.sessions))
                 bars.append(TrendBar(id: index, label: dayText(date), total: rows.reduce(0) { $0 + $1.billable }))
             }
         }
         self.bars = bars
+        self.sessions = sessions.count
         total = bars.reduce(0) { $0 + $1.total }
     }
 }

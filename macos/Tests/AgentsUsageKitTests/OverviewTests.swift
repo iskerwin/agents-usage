@@ -3,11 +3,11 @@ import SwiftUI
 import Testing
 @testable import AgentsUsageKit
 
-private func row(_ date: String, _ agent: String, _ amount: Int,
-                 model: String = "m", project: String = "p") -> Snapshot.Row {
+private func row(_ date: String, _ agent: String, _ amount: Int, requests: Int = 1,
+                 model: String = "m", project: String = "p", sessions: [Int] = []) -> Snapshot.Row {
     let json = """
     {"date":"\(date)","agent":"\(agent)","model":"\(model)","project":"\(project)","fresh":\(amount),
-     "cache_write":0,"output":0}
+     "cache_read":0,"cache_write":0,"output":0,"requests":\(requests),"sessions":\(sessions)}
     """
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -121,6 +121,7 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(codex.bars.first?.total == 5)
     #expect(codex.bars.last?.total == 10)
     #expect(codex.total == 15)
+    #expect(codex.sessions == 1)
     #expect(Trend(usage: usage, range: .day, agent: .claude, now: now).total == 20)
 }
 
@@ -186,11 +187,14 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
 }
 
 @Test func detailsCoverOnlyThatAgentsMonth() {
-    let rows = [row("2026-11-05", "codex", 100, model: "sol", project: "~/a"),
-                row("2026-11-01", "codex", 40, model: "terra", project: "~/a"),
-                row("2026-10-31", "codex", 999, model: "old", project: "~/old"),
-                row("2026-11-05", "claude", 500, model: "opus", project: "~/c")]
+    let rows = [row("2026-11-05", "codex", 100, requests: 2, model: "sol", project: "~/a", sessions: [1]),
+                row("2026-11-01", "codex", 40, requests: 3, model: "terra", project: "~/a", sessions: [1, 2]),
+                row("2026-10-31", "codex", 999, model: "old", project: "~/old", sessions: [9]),
+                row("2026-11-05", "claude", 500, model: "opus", project: "~/c", sessions: [3])]
     let details = AgentDetails(rows: rows, kind: .codex, today: "2026-11-05")
+    #expect(details.requests == 5)
+    #expect(details.sessions == 2)
+    #expect(details.today.input == 100)
     #expect(details.models == [AgentDetails.Entry(name: "sol", tokens: 100), AgentDetails.Entry(name: "terra", tokens: 40)])
     #expect(details.projects == [AgentDetails.Entry(name: "~/a", tokens: 140)])
 }
@@ -271,4 +275,86 @@ private func window(_ label: String, left: Double, resetsAt: Int? = nil) throws 
     try Data().write(to: file)
     defer { try? FileManager.default.removeItem(at: file) }
     #expect(projectFolder(file.path) == nil)
+}
+
+@Test func detailsKeepManualResetsAndTheirSource() throws {
+    let json = """
+    {"generated_at":100,"accounts":[{"agent":"codex","name":"c","stale":false,"windows":[],"manual_resets":2,
+      "source":"codex app-server","captured_at":40}],"usage":{"rows":[]}}
+    """
+    let account = try Snapshot.decode(Data(json.utf8)).accounts[0]
+    #expect(account.manualResets == 2)
+    #expect(account.source == "codex app-server")
+    #expect(account.capturedAt == 40)
+}
+
+@Test func cacheHitsCountOnlyWhatWasSent() throws {
+    let now = 1_793_900_000
+    let today = localDate(epoch: now)
+    let rows = "[" + [costRow(today, "codex", "m", fresh: 100, cacheRead: 300, output: 5, cost: nil),
+                      costRow("2020-01-01", "codex", "m", fresh: 999, cost: nil)].joined(separator: ",") + "]"
+    let snap = try snapshot(rows: rows, now: now)
+    let details = AgentDetails(rows: snap.usage.rows, kind: .codex, today: today)
+    #expect(details.today.input == 100)
+    #expect(details.today.output == 5)
+    #expect(details.today.cacheHit == 0.75)
+    #expect(AgentDetails(rows: snap.usage.rows, kind: .grok, today: today).today.cacheHit == nil)
+}
+
+private func settle() async {
+    try? await Task.sleep(nanoseconds: 60_000_000)
+}
+
+@MainActor @Test func hoverOpensSwitchesAndClosesAfterADelay() async {
+    let selection = AgentSelection(openDelay: 0.01, closeDelay: 0.01)
+    selection.hover(.codex, inside: true)
+    #expect(selection.shown == nil)
+    await settle()
+    #expect(selection.shown == .codex)
+    // The next row can report the pointer before the last one lets go.
+    selection.hover(.claude, inside: true)
+    selection.hover(.codex, inside: false)
+    #expect(selection.shown == .claude)
+    await settle()
+    #expect(selection.shown == .claude)
+    selection.hover(.claude, inside: false)
+    await settle()
+    #expect(selection.shown == nil)
+}
+
+@MainActor @Test func passingOverARowOpensNothing() async {
+    let selection = AgentSelection(openDelay: 0.03, closeDelay: 0.01)
+    selection.hover(.codex, inside: true)
+    selection.hover(.codex, inside: false)
+    await settle()
+    #expect(selection.shown == nil)
+}
+
+@MainActor @Test func detailStaysWhileThePointerIsInside() async {
+    let selection = AgentSelection(openDelay: 0, closeDelay: 0.01)
+    selection.hover(.grok, inside: true)
+    await settle()
+    selection.hover(.grok, inside: false)
+    selection.pointerInDetail(true)
+    await settle()
+    #expect(selection.shown == .grok)
+    selection.pointerInDetail(false)
+    await settle()
+    #expect(selection.shown == nil)
+}
+
+@MainActor @Test func clickKeepsTheDetailUntilClickedAgain() async {
+    let selection = AgentSelection(openDelay: 0, closeDelay: 0.01)
+    selection.click(.codex)
+    #expect(selection.shown == .codex)
+    selection.hover(.claude, inside: true)
+    #expect(selection.shown == .claude)
+    selection.hover(.claude, inside: false)
+    await settle()
+    #expect(selection.shown == .codex)
+    selection.click(.codex)
+    #expect(selection.shown == nil)
+    selection.click(.grok)
+    selection.clear()
+    #expect(selection.shown == nil)
 }

@@ -24,24 +24,35 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private static let reopenGuardSeconds: TimeInterval = 0.25
     private static let gapBelowMenuBar: CGFloat = 2
     private static let screenMargin: CGFloat = 8
+    private static let gapBetweenPanels: CGFloat = 6
 
     private let store = Store()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let selection = AgentSelection()
     private let panel = FloatingPanel()
+    private let detailPanel = FloatingPanel()
     private var hosting: NSHostingController<StorePanel>?
+    private var detailHosting: NSHostingController<StoreDetail>?
     private var subscription: AnyCancellable?
+    private var selectionSubscription: AnyCancellable?
     private var outsideClicks: Any?
     private var appSwitches: NSObjectProtocol?
     private var lastClosed = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let hosting = NSHostingController(rootView: StorePanel(store: store, onDismiss: { [weak self] in self?.closePanel() }))
-        hosting.sizingOptions = .preferredContentSize
-        hosting.view.autoresizingMask = [.width, .height]
-        hosting.view.frame = panel.contentView?.bounds ?? .zero
-        panel.contentView?.addSubview(hosting.view)
+        let dismiss = { [weak self] in self?.closePanel() ?? () }
+        let hosting = NSHostingController(rootView: StorePanel(store: store, selection: selection, onDismiss: dismiss,
+                                                               onHeight: { [weak self] in self?.resizePanel(to: $0) }))
+        install(hosting, in: panel)
         self.hosting = hosting
-        panel.onClose = { [weak self] in self?.closePanel() }
+        panel.onClose = dismiss
+
+        let detailHosting = NSHostingController(rootView: StoreDetail(store: store, selection: selection, onDismiss: dismiss))
+        install(detailHosting, in: detailPanel)
+        self.detailHosting = detailHosting
+        detailPanel.onClose = dismiss
+        detailPanel.onPointer = { [weak self] in self?.selection.pointerInDetail($0) }
+        selectionSubscription = selection.$shown.sink { [weak self] in self?.showDetail($0) }
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent", accessibilityDescription: "Agents Usage")
@@ -52,6 +63,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
         subscription = store.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateStatusItem() }  // the value changes after this fires
         }
+    }
+
+    private func install<Root: View>(_ hosting: NSHostingController<Root>, in panel: FloatingPanel) {
+        hosting.sizingOptions = .preferredContentSize
+        hosting.view.autoresizingMask = [.width, .height]
+        hosting.view.frame = panel.contentView?.bounds ?? .zero
+        panel.contentView?.addSubview(hosting.view)
     }
 
     private func updateStatusItem() {
@@ -89,6 +107,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private func closePanel() {
         guard panel.isVisible else { return }
         store.setPanelOpen(false)
+        selection.clear()
         panel.orderOut(nil)
         lastClosed = Date()
         statusItem.button?.highlight(false)
@@ -110,12 +129,43 @@ private final class AppController: NSObject, NSApplicationDelegate {
         panel.setFrame(NSRect(x: x, y: top - size.height, width: size.width, height: size.height), display: true)
         panel.invalidateShadow()
     }
+
+    /// The content decides the height, and the top stays under the status item.
+    private func resizePanel(to height: CGFloat) {
+        guard height > 0, abs(panel.frame.height - height) > 0.5 else { return }
+        // Layout is running: a window must not change size in the middle of it.
+        DispatchQueue.main.async { [self] in
+            var frame = panel.frame
+            frame.origin.y = frame.maxY - height
+            frame.size.height = height
+            panel.setFrame(frame, display: true)
+            panel.invalidateShadow()
+        }
+    }
+
+    /// Beside the panel, on the side with room, and level with its top.
+    private func showDetail(_ kind: AgentKind?) {
+        guard kind != nil, panel.isVisible else {
+            detailPanel.orderOut(nil)
+            return
+        }
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+        let main = panel.frame
+        let size = Layout.detailSize
+        let height = min(size.height, main.maxY - visible.minY - Self.screenMargin)
+        var x = main.minX - Self.gapBetweenPanels - size.width
+        if x < visible.minX + Self.screenMargin { x = main.maxX + Self.gapBetweenPanels }
+        detailPanel.setFrame(NSRect(x: x, y: main.maxY - height, width: size.width, height: height), display: true)
+        detailPanel.invalidateShadow()
+        detailPanel.orderFront(nil)
+    }
 }
 
 private final class FloatingPanel: NSPanel {
     private static let cornerRadius: CGFloat = 12
 
     var onClose: () -> Void = {}
+    var onPointer: (Bool) -> Void = { _ in }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -133,6 +183,18 @@ private final class FloatingPanel: NSPanel {
         surface.state = .active
         surface.maskImage = Self.roundedMask()
         contentView = surface
+        surface.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                               owner: self))
+    }
+
+    // The panel under the pointer takes key, so its rows hover and its first click counts.
+    override func mouseEntered(with event: NSEvent) {
+        makeKey()
+        onPointer(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onPointer(false)
     }
 
     // A borderless window declines key by default, and only a key panel takes the first click.
@@ -158,13 +220,26 @@ private final class FloatingPanel: NSPanel {
 
 private struct StorePanel: View {
     @ObservedObject var store: Store
+    let selection: AgentSelection
     let onDismiss: () -> Void
+    let onHeight: (CGFloat) -> Void
 
     var body: some View {
         PanelView(snapshot: store.snapshot, error: store.error, busy: store.busy,
                   budget: store.monthlyBudget, onBudget: { store.setBudget($0) },
                   theme: store.theme, onTheme: { store.setTheme($0) },
                   language: store.language, onLanguage: { store.setLanguage($0) },
-                  onRefresh: { store.refresh() }, onQuit: { NSApplication.shared.terminate(nil) }, onDismiss: onDismiss)
+                  onRefresh: { store.refresh() }, onQuit: { NSApplication.shared.terminate(nil) }, onDismiss: onDismiss,
+                  onHeight: onHeight, selection: selection)
+    }
+}
+
+private struct StoreDetail: View {
+    @ObservedObject var store: Store
+    @ObservedObject var selection: AgentSelection
+    let onDismiss: () -> Void
+
+    var body: some View {
+        DetailPanelView(snapshot: store.snapshot, kind: selection.shown, language: store.language, onDismiss: onDismiss)
     }
 }
