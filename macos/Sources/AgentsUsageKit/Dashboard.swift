@@ -127,8 +127,10 @@ struct Dashboard: View {
             if !tasks.isEmpty {
                 SectionDivider()
                 ScrollView {
-                    TaskList(snapshot: snapshot, agent: nil, state: state)
+                    TaskList(snapshot: snapshot, agent: nil, state: state).padding(.horizontal, Layout.padding)
                 }
+                // Out to the panel's edge, so the scroller passes beside the text and not over it.
+                .padding(.horizontal, -Layout.padding)
                 .frame(height: CGFloat(min(tasks.count, Layout.visibleTasks)) * Layout.taskRowHeight)
             }
         } else {
@@ -490,7 +492,7 @@ struct AgentPage: View {
                 Text(kind.title).font(.system(size: 13, weight: .semibold))
             }
             .frame(height: 28)
-            .padding(.horizontal, Column.rowInset)
+            .padding(.horizontal, Layout.padding + Column.rowInset)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if let summary = snapshot.summaries.first(where: { $0.kind == kind }) {
@@ -513,6 +515,7 @@ struct AgentPage: View {
                     }
                 }
                 .padding(.bottom, 6)
+                .padding(.horizontal, Layout.padding)
             }
         }
     }

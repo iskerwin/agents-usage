@@ -31,7 +31,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private let panel = FloatingPanel()
     private let detailPanel = FloatingPanel()
     private var hosting: NSHostingController<StorePanel>?
-    private var detailHosting: NSHostingController<StoreDetail>?
+    private var detailHosting: NSHostingView<StoreDetail>?
     private var subscription: AnyCancellable?
     private var selectionSubscription: AnyCancellable?
     private var outsideClicks: Any?
@@ -46,11 +46,17 @@ private final class AppController: NSObject, NSApplicationDelegate {
         self.hosting = hosting
         panel.onClose = dismiss
 
-        let detailHosting = NSHostingController(rootView: StoreDetail(store: store, selection: selection, onDismiss: dismiss))
-        install(detailHosting, in: detailPanel)
+        let detailHosting = NSHostingView(rootView: StoreDetail(store: store, kind: nil, onDismiss: dismiss))
+        // The panel has one size whatever it shows, so its content must not resize it.
+        detailHosting.sizingOptions = []
+        detailHosting.autoresizingMask = [.width, .height]
+        detailHosting.frame = detailPanel.contentView?.bounds ?? .zero
+        detailPanel.contentView?.addSubview(detailHosting)
         self.detailHosting = detailHosting
         detailPanel.onClose = dismiss
-        panel.onPointerMoved = { [weak self] in self?.selection.pointerMoved(to: $0) }
+        panel.onPointerMoved = { [weak self] in self?.pointerMoved() }
+        // Always over the panel it touches, whichever of the two was clicked last.
+        detailPanel.level = NSWindow.Level(rawValue: panel.level.rawValue + 1)
         detailPanel.onPointerEntered = { [weak self] in self?.selection.pointerEnteredDetail() }
         selectionSubscription = selection.$shown.sink { [weak self] in self?.showDetail($0) }
 
@@ -65,7 +71,14 @@ private final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func install<Root: View>(_ hosting: NSHostingController<Root>, in panel: FloatingPanel) {
+    private func pointerMoved() {
+        let mouse = NSEvent.mouseLocation
+        // The panels overlap, and the pointer in that strip is in the detail.
+        if detailPanel.isVisible, detailPanel.frame.contains(mouse) { return }
+        selection.pointerMoved(to: pointInPanel(mouse: mouse, panel: panel.frame))
+    }
+
+    private func install(_ hosting: NSHostingController<StorePanel>, in panel: FloatingPanel) {
         hosting.sizingOptions = .preferredContentSize
         hosting.view.autoresizingMask = [.width, .height]
         hosting.view.frame = panel.contentView?.bounds ?? .zero
@@ -144,10 +157,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func showDetail(_ kind: AgentKind?) {
-        guard let kind, panel.isVisible else {
+        guard let kind, panel.isVisible, let detailHosting else {
             detailPanel.orderOut(nil)
             return
         }
+        // Handed over rather than observed: another window's view would redraw a step late,
+        // and this has to be on screen with the panel.
+        detailHosting.rootView.kind = kind
         let screen = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
         detailPanel.setFrame(detailFrame(panel: panel.frame, rowTop: selection.rowTop(kind), size: Layout.detailSize, screen: screen),
                              display: true)
@@ -161,7 +177,7 @@ private final class FloatingPanel: NSPanel {
 
     var onClose: () -> Void = {}
     var onPointerEntered: () -> Void = {}
-    var onPointerMoved: (CGPoint) -> Void = { _ in }
+    var onPointerMoved: () -> Void = {}
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -189,12 +205,11 @@ private final class FloatingPanel: NSPanel {
         makeKey()
         onPointerEntered()
         // Coming in counts as a position, so the first row reacts without a second movement.
-        mouseMoved(with: event)
+        onPointerMoved()
     }
 
-    /// Measured from the top left, the way the content lays itself out.
     override func mouseMoved(with event: NSEvent) {
-        onPointerMoved(CGPoint(x: event.locationInWindow.x, y: frame.height - event.locationInWindow.y))
+        onPointerMoved()
     }
 
     // A borderless window declines key by default, and only a key panel takes the first click.
@@ -236,10 +251,10 @@ private struct StorePanel: View {
 
 private struct StoreDetail: View {
     @ObservedObject var store: Store
-    @ObservedObject var selection: AgentSelection
+    var kind: AgentKind?
     let onDismiss: () -> Void
 
     var body: some View {
-        DetailPanelView(snapshot: store.snapshot, kind: selection.shown, language: store.language, onDismiss: onDismiss)
+        DetailPanelView(snapshot: store.snapshot, kind: kind, language: store.language, onDismiss: onDismiss)
     }
 }

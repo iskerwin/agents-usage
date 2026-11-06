@@ -28,8 +28,9 @@ public final class AgentSelection: ObservableObject {
     }
 
     /// The pointer moved inside the main panel. Leaving it changes nothing, as with a submenu.
+    /// Only the height counts: a row reaches both edges, its inset being just for looks.
     public func pointerMoved(to point: CGPoint) {
-        let next = rows.first { $0.value.contains(point) }?.key
+        let next = rows.first { $0.value.minY..<$0.value.maxY ~= point.y }?.key
         guard next != target else { return }
         target = next
         pending?.cancel()
@@ -57,6 +58,13 @@ public final class AgentSelection: ObservableObject {
         target = nil
         shown = nil
     }
+}
+
+/// A point on screen in a panel's coordinates, measured from its top left.
+/// From the screen because an event's own location is relative to the window it
+/// was sent to, which is the key window and not always the one being tracked.
+public func pointInPanel(mouse: NSPoint, panel: NSRect) -> CGPoint {
+    CGPoint(x: mouse.x - panel.minX, y: panel.maxY - mouse.y)
 }
 
 /// Touching the panel at the row's height: to its right, or to its left when the

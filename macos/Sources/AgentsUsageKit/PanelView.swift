@@ -158,7 +158,7 @@ public struct DetailPanelView: View {
             }
         }
         .id(language)
-        .padding(Layout.padding)
+        .padding(.vertical, Layout.padding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }

@@ -395,3 +395,26 @@ private let onTasks = CGPoint(x: 100, y: 200)
     #expect(frame.minY == 8)
     #expect(frame.minX >= screen.minX)
 }
+
+@Test func pointerIsMeasuredFromThePanelsTopLeft() {
+    let panel = NSRect(x: 1000, y: 400, width: 320, height: 382)
+    #expect(pointInPanel(mouse: NSPoint(x: 1010, y: 782), panel: panel) == CGPoint(x: 10, y: 0))
+    #expect(pointInPanel(mouse: NSPoint(x: 1320, y: 400), panel: panel) == CGPoint(x: 320, y: 382))
+}
+
+@MainActor @Test func aRowReachesBothEdgesOfThePanel() async {
+    let selection = selection()
+    selection.pointerMoved(to: CGPoint(x: 319, y: 75))
+    await settle()
+    #expect(selection.shown == .claude)
+}
+
+@Test func detailOverlapsTheSameOnEitherSide() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 870)
+    let size = NSSize(width: 320, height: 480)
+    let onRight = NSRect(x: 400, y: 480, width: 320, height: 382)
+    let onLeft = NSRect(x: 1100, y: 480, width: 320, height: 382)
+    let right = detailFrame(panel: onRight, rowTop: 0, size: size, screen: screen)
+    let left = detailFrame(panel: onLeft, rowTop: 0, size: size, screen: screen)
+    #expect(onRight.maxX - right.minX == left.maxX - onLeft.minX)
+}
