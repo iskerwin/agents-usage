@@ -3,12 +3,11 @@ import SwiftUI
 import Testing
 @testable import AgentsUsageKit
 
-private func row(_ date: String, _ agent: String, _ amount: Int, requests: Int = 1,
-                 model: String = "m", project: String = "p", cacheRead: Int = 0,
-                 output: Int = 0, sessions: [Int] = []) -> Snapshot.Row {
+private func row(_ date: String, _ agent: String, _ amount: Int,
+                 model: String = "m", project: String = "p") -> Snapshot.Row {
     let json = """
     {"date":"\(date)","agent":"\(agent)","model":"\(model)","project":"\(project)","fresh":\(amount),
-     "cache_read":\(cacheRead),"cache_write":0,"output":\(output),"requests":\(requests),"sessions":\(sessions)}
+     "cache_write":0,"output":0}
     """
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -105,21 +104,6 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(nothing.today == 0)
 }
 
-@Test func todayTokensFollowTheAgentFilter() throws {
-    let now = 1_793_900_000
-    let today = localDate(epoch: now)
-    let rows = "[" + [costRow(today, "codex", "m", fresh: 100, cacheRead: 300, output: 5, cost: nil),
-                      costRow(today, "claude", "m", fresh: 50, output: 1, cost: nil),
-                      costRow("2020-01-01", "codex", "m", fresh: 999, cost: nil)].joined(separator: ",") + "]"
-    let snap = try snapshot(rows: rows, now: now)
-    let codex = snap.tokensToday(agent: .codex)
-    #expect(codex.input == 100)
-    #expect(codex.output == 5)
-    #expect(codex.cacheHit == 0.75)
-    #expect(snap.tokensToday(agent: nil).input == 150)
-    #expect(snap.tokensToday(agent: .grok).cacheHit == nil)
-}
-
 @Test func dayTrendHasTwentyFourHoursEndingNow() throws {
     let now = 1_793_900_000
     let hour = Int(Calendar.current.dateInterval(of: .hour, for: Date(timeIntervalSince1970: TimeInterval(now)))!.start.timeIntervalSince1970)
@@ -132,16 +116,12 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
                        hourRow(hour - 23 * 3600, "codex", 5, 1), hourRow(hour - 24 * 3600, "codex", 99, 3)]
         .joined(separator: ",") + "]"
     let usage = try snapshot(hours: hours, now: now).usage
-    let all = Trend(usage: usage, range: .day, agent: nil, now: now)
-    #expect(all.bars.count == 24)
-    #expect(all.bars.last?.amounts[.claude] == 20)
-    #expect(all.bars.first?.total == 5)
-    #expect(all.total == 35)
-    #expect(all.sessions == 2)
     let codex = Trend(usage: usage, range: .day, agent: .codex, now: now)
+    #expect(codex.bars.count == 24)
+    #expect(codex.bars.first?.total == 5)
+    #expect(codex.bars.last?.total == 10)
     #expect(codex.total == 15)
-    #expect(codex.sessions == 1)
-    #expect(codex.bars.last?.amounts[.claude] == nil)
+    #expect(Trend(usage: usage, range: .day, agent: .claude, now: now).total == 20)
 }
 
 @Test func dayRangesUseTheDailyRows() throws {
@@ -149,9 +129,10 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     let today = localDate(epoch: now)
     let rows = "[\(costRow(today, "codex", "m", fresh: 10, cost: nil)),\(costRow("2020-01-01", "codex", "m", fresh: 99, cost: nil))]"
     let usage = try snapshot(rows: rows, now: now).usage
-    #expect(Trend(usage: usage, range: .week, agent: nil, now: now).bars.count == 7)
-    #expect(Trend(usage: usage, range: .month, agent: nil, now: now).bars.count == 30)
-    #expect(Trend(usage: usage, range: .month, agent: nil, now: now).total == 10)
+    #expect(Trend(usage: usage, range: .week, agent: .codex, now: now).bars.count == 7)
+    #expect(Trend(usage: usage, range: .month, agent: .codex, now: now).bars.count == 30)
+    #expect(Trend(usage: usage, range: .month, agent: .codex, now: now).total == 10)
+    #expect(Trend(usage: usage, range: .month, agent: .grok, now: now).total == 0)
     #expect(recentDates(endingAt: "2026-03-01", count: 2) == ["2026-02-28", "2026-03-01"])
 }
 
@@ -175,7 +156,7 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     """
     let snap = try Snapshot.decode(Data(json.utf8))
     #expect(snap.tasks == nil)
-    #expect(Trend(usage: snap.usage, range: .day, agent: nil, now: 1).total == 0)
+    #expect(Trend(usage: snap.usage, range: .day, agent: .codex, now: 1).total == 0)
 }
 
 @Test func compactTexts() {
@@ -205,13 +186,11 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
 }
 
 @Test func detailsCoverOnlyThatAgentsMonth() {
-    let rows = [row("2026-11-05", "codex", 100, requests: 2, model: "sol", project: "~/a", sessions: [1]),
-                row("2026-11-01", "codex", 40, requests: 3, model: "terra", project: "~/a", sessions: [1, 2]),
-                row("2026-10-31", "codex", 999, model: "old", project: "~/old", sessions: [9]),
-                row("2026-11-05", "claude", 500, model: "opus", project: "~/c", sessions: [3])]
+    let rows = [row("2026-11-05", "codex", 100, model: "sol", project: "~/a"),
+                row("2026-11-01", "codex", 40, model: "terra", project: "~/a"),
+                row("2026-10-31", "codex", 999, model: "old", project: "~/old"),
+                row("2026-11-05", "claude", 500, model: "opus", project: "~/c")]
     let details = AgentDetails(rows: rows, kind: .codex, today: "2026-11-05")
-    #expect(details.requests == 5)
-    #expect(details.sessions == 2)
     #expect(details.models == [AgentDetails.Entry(name: "sol", tokens: 100), AgentDetails.Entry(name: "terra", tokens: 40)])
     #expect(details.projects == [AgentDetails.Entry(name: "~/a", tokens: 140)])
 }
@@ -262,4 +241,34 @@ private func window(_ label: String, left: Double, resetsAt: Int? = nil) throws 
     #expect(try snapshot(accounts: across).summaries[0].glanceWindows.map(\.leftPercent) == [60])
     let stale = "[\(account("codex", "a", stale: true, left: [5])),\(account("codex", "b", left: [70]))]"
     #expect(try snapshot(accounts: stale).summaries[0].glanceWindows.map(\.leftPercent) == [70])
+}
+
+@Test func processEnvironmentSkipsThePathAndArguments() {
+    var data = withUnsafeBytes(of: Int32(2)) { Data($0) }
+    data += Data("/bin/claude\0\0\0\0claude\0REX_BLOCK=not-env\0REX_SESSION=session:1\0REX_BLOCK=a=b\0HOME\0\0".utf8)
+    let environment = TerminalOpener.environment(fromProcessArguments: data)
+    #expect(environment == ["REX_SESSION": "session:1", "REX_BLOCK": "a=b"])
+    #expect(TerminalOpener.environment(fromProcessArguments: Data()).isEmpty)
+}
+
+@Test func paneNeedsBothSessionAndBlock() {
+    let pane = RexPane(environment: ["REX_SESSION": "s", "REX_BLOCK": "b", "REX_SERVER": "unix:///x"])
+    #expect(pane?.session == "s")
+    #expect(pane?.block == "b")
+    #expect(pane?.server == "unix:///x")
+    #expect(RexPane(environment: ["REX_SESSION": "s"]) == nil)
+    #expect(RexPane(environment: [:]) == nil)
+}
+
+@Test func projectFolderOnlyNamesFoldersThatExist() throws {
+    let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+    #expect(projectFolder("~")?.standardizedFileURL.path == home)
+    #expect(projectFolder("/tmp") != nil)
+    #expect(projectFolder("/definitely/not/here") == nil)
+    #expect(projectFolder("22 others") == nil)
+    #expect(projectFolder("~other") == nil)
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try Data().write(to: file)
+    defer { try? FileManager.default.removeItem(at: file) }
+    #expect(projectFolder(file.path) == nil)
 }

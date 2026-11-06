@@ -13,11 +13,8 @@ public struct Snapshot: Decodable {
         public let email: String?
         public let plan: String?
         public let windows: [QuotaWindow]
-        public let source: String?
-        public let capturedAt: Int?
         public let stale: Bool
         public let note: String?
-        public let manualResets: Int?
 
         public var id: String { name }
     }
@@ -43,7 +40,6 @@ public struct Snapshot: Decodable {
         public let project: String
         public let cwd: String?
         public let state: String
-        public let since: Int
 
         public var id: Int32 { pid }
     }
@@ -52,11 +48,8 @@ public struct Snapshot: Decodable {
         public let hour: Int
         public let agent: String
         public let fresh: Int
-        public let cacheRead: Int
         public let cacheWrite: Int
         public let output: Int
-        public let requests: Int
-        public let sessions: [Int]
 
         public var billable: Int { fresh + cacheWrite + output }
     }
@@ -67,11 +60,8 @@ public struct Snapshot: Decodable {
         public let model: String
         public let project: String
         public let fresh: Int
-        public let cacheRead: Int
         public let cacheWrite: Int
         public let output: Int
-        public let requests: Int
-        public let sessions: [Int]
         public let cost: Double?  // nil when the model has no public price
 
         /// The CLI's default "billable" metric: everything but cache reads.

@@ -29,14 +29,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panel = FloatingPanel()
     private var hosting: NSHostingController<StorePanel>?
-    private var statusView: NSHostingView<StatusBarView>?
     private var subscription: AnyCancellable?
     private var outsideClicks: Any?
     private var appSwitches: NSObjectProtocol?
     private var lastClosed = Date.distantPast
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let hosting = NSHostingController(rootView: StorePanel(store: store))
+        let hosting = NSHostingController(rootView: StorePanel(store: store, onDismiss: { [weak self] in self?.closePanel() }))
         hosting.sizingOptions = .preferredContentSize
         hosting.view.autoresizingMask = [.width, .height]
         hosting.view.frame = panel.contentView?.bounds ?? .zero
@@ -45,16 +44,9 @@ private final class AppController: NSObject, NSApplicationDelegate {
         panel.onClose = { [weak self] in self?.closePanel() }
 
         if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent", accessibilityDescription: "Agents Usage")
             button.target = self
             button.action = #selector(toggle)
-            let view = ClickThroughHostingView(rootView: StatusBarView(store: store))
-            view.translatesAutoresizingMaskIntoConstraints = false
-            button.addSubview(view)
-            NSLayoutConstraint.activate([
-                view.centerXAnchor.constraint(equalTo: button.centerXAnchor),
-                view.centerYAnchor.constraint(equalTo: button.centerYAnchor),
-            ])
-            statusView = view
         }
         updateStatusItem()
         subscription = store.objectWillChange.sink { [weak self] _ in
@@ -63,10 +55,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItem() {
-        guard let statusView else { return }
-        statusView.layoutSubtreeIfNeeded()
-        statusItem.length = statusView.fittingSize.width
-        // The meters carry no numbers, so hover and VoiceOver get them in words.
+        // The icon carries no numbers, so hover and VoiceOver get them in words.
         let description = store.summaries.map { summary in
             "\(summary.kind.title) \(summary.window.map { percentText($0.leftPercent) } ?? "—")"
         }.joined(separator: ", ")
@@ -118,27 +107,13 @@ private final class AppController: NSObject, NSApplicationDelegate {
         let x = min(max(anchor.midX - size.width / 2, visible.minX + Self.screenMargin),
                     visible.maxX - size.width - Self.screenMargin)
         let top = anchor.minY - Self.gapBelowMenuBar
-        panel.setMask(size: size, caretX: anchor.midX - x)
         panel.setFrame(NSRect(x: x, y: top - size.height, width: size.width, height: size.height), display: true)
         panel.invalidateShadow()
     }
-
-    /// What the screen leaves below the menu bar.
-    fileprivate static func panelHeightLimit() -> CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 800) - gapBelowMenuBar - screenMargin
-    }
-}
-
-private final class ClickThroughHostingView<Content: View>: NSHostingView<Content> {
-    // The status item's button keeps the clicks and its highlight.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private final class FloatingPanel: NSPanel {
-    private static let cornerRadius: CGFloat = 18
-    private static let caretHalfWidth: CGFloat = 11
-
-    private let glass = NSVisualEffectView()
+    private static let cornerRadius: CGFloat = 12
 
     var onClose: () -> Void = {}
 
@@ -152,10 +127,12 @@ private final class FloatingPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = true
 
-        glass.material = .popover
-        glass.blendingMode = .behindWindow
-        glass.state = .active
-        contentView = glass
+        let surface = NSVisualEffectView()
+        surface.material = .popover
+        surface.blendingMode = .behindWindow
+        surface.state = .active
+        surface.maskImage = Self.roundedMask()
+        contentView = surface
     }
 
     // A borderless window declines key by default, and only a key panel takes the first click.
@@ -165,36 +142,29 @@ private final class FloatingPanel: NSPanel {
         onClose()
     }
 
-    /// A rounded body with a caret on top, pointing at the status item.
-    func setMask(size: NSSize, caretX: CGFloat) {
-        let radius = Self.cornerRadius, half = Self.caretHalfWidth, caret = PanelView.caretHeight
-        let x = min(max(caretX, radius + half), size.width - radius - half)
-        glass.maskImage = NSImage(size: size, flipped: false) { _ in
-            let top = size.height - caret
-            let path = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: size.width, height: top),
-                                    xRadius: radius, yRadius: radius)
-            path.move(to: NSPoint(x: x - half, y: top))
-            path.curve(to: NSPoint(x: x, y: size.height),
-                       controlPoint1: NSPoint(x: x - half / 2, y: top), controlPoint2: NSPoint(x: x - half / 3, y: size.height))
-            path.curve(to: NSPoint(x: x + half, y: top),
-                       controlPoint1: NSPoint(x: x + half / 3, y: size.height), controlPoint2: NSPoint(x: x + half / 2, y: top))
-            path.close()
+    /// Stretches to any size, keeping its corners.
+    private static func roundedMask() -> NSImage {
+        let radius = cornerRadius
+        let image = NSImage(size: NSSize(width: radius * 2 + 1, height: radius * 2 + 1), flipped: false) { rect in
             NSColor.black.setFill()
-            path.fill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
             return true
         }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 }
 
 private struct StorePanel: View {
     @ObservedObject var store: Store
+    let onDismiss: () -> Void
 
     var body: some View {
         PanelView(snapshot: store.snapshot, error: store.error, busy: store.busy,
                   budget: store.monthlyBudget, onBudget: { store.setBudget($0) },
                   theme: store.theme, onTheme: { store.setTheme($0) },
                   language: store.language, onLanguage: { store.setLanguage($0) },
-                  onRefresh: { store.refresh() }, onQuit: { NSApplication.shared.terminate(nil) },
-                  maxHeight: AppController.panelHeightLimit())
+                  onRefresh: { store.refresh() }, onQuit: { NSApplication.shared.terminate(nil) }, onDismiss: onDismiss)
     }
 }

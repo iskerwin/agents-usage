@@ -7,19 +7,16 @@ import json
 import os
 import sys
 import time
-from typing import Any, Callable, Optional
+from typing import Any
 
 from agents_usage import __version__
 from agents_usage.logs import Scanner, rollup
 from agents_usage.quota import QuotaService, capture_claude_statusline, timezone_name
-from agents_usage.render import METRICS, Caps, ViewOptions, build_view
+from agents_usage.render import MAX_WIDTH, METRICS, ViewOptions, build_view, to_ansi
 from agents_usage.tasks import list_tasks
-from agents_usage.tui import fetch_with_boot, print_view, terminal_size, watch
+from agents_usage.tui import terminal_size, watch
 
 MIN_WATCH_SECONDS = 5
-MAX_ONE_SHOT_WIDTH = 110
-
-Step = Callable[[str, Optional[str]], None]
 
 
 class Panel:
@@ -27,16 +24,9 @@ class Panel:
         self.scanner = Scanner()
         self.quota = QuotaService(self.scanner, claude_live)
 
-    def snapshot(self, force: bool = False, on_step: Optional[Step] = None) -> dict[str, Any]:
-        step = on_step or (lambda label, detail: None)
-        step("解析会话日志", None)
-        records = self.scanner.records()
-        usage = rollup(records)
-        step("解析会话日志", f"{self.scanner.file_count} 个文件 · {len(records):,} 条记录")
-        step("读取配额", None)
+    def snapshot(self, force: bool = False) -> dict[str, Any]:
+        usage = rollup(self.scanner.records())
         quota = self.quota.get(force)
-        windows = sum(len(a["windows"]) for a in quota["accounts"])
-        step("读取配额", f"{len(quota['accounts'])} 个 agent · {windows} 个窗口")
         return {
             "version": __version__,
             "generated_at": int(time.time()),
@@ -47,14 +37,12 @@ class Panel:
         }
 
 
-def detect_caps(no_color: bool) -> Caps:
-    encoding = (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "")
-    unicode = encoding.startswith("utf")
-    term = os.environ.get("TERM", "")
-    if no_color or "NO_COLOR" in os.environ or term == "dumb" or not sys.stdout.isatty():
-        return Caps(color=0, unicode=unicode)
-    truecolor = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
-    return Caps(color=24 if truecolor else 256, unicode=unicode)
+def wants_color(no_color: bool) -> bool:
+    return not (no_color or "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb" or not sys.stdout.isatty())
+
+
+def supports_unicode() -> bool:
+    return (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "").startswith("utf")
 
 
 def positive_int(text: str) -> int:
@@ -78,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--projects", action="store_true", help="同时显示项目明细")
     parser.add_argument("--json", action="store_true", help="输出 JSON 后退出")
     parser.add_argument("--no-color", action="store_true", help="不使用颜色")
-    parser.add_argument("--no-anim", action="store_true", help="不播放动画")
+    # There are no animations left. Still accepted, so existing scripts keep working.
+    parser.add_argument("--no-anim", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--claude-live", action="store_true",
                         help="读取 Claude Code 的 OAuth token（macOS 上可能弹出钥匙串授权）以查询实时配额")
     parser.add_argument("--version", action="version", version=__version__)
@@ -119,20 +108,25 @@ def main() -> int:
         print(json.dumps(panel.snapshot(), ensure_ascii=False, indent=2))
         return 0
 
-    caps = detect_caps(args.no_color)
+    color = wants_color(args.no_color)
     width, _ = terminal_size()
-    opts = ViewOptions(width=min(width, MAX_ONE_SHOT_WIDTH), days=args.days, agent=args.agent, metric=args.metric,
-                       projects=args.projects, unicode=caps.unicode)
-    interactive = sys.stdout.isatty() and bool(caps.color)
+    opts = ViewOptions(width=min(width, MAX_WIDTH), days=args.days, agent=args.agent, metric=args.metric,
+                       projects=args.projects, unicode=supports_unicode())
     if args.watch is not None:
         if not sys.stdout.isatty():
             print("--watch 需要在交互式终端中运行", file=sys.stderr)
             return 2
-        watch(panel.snapshot, opts, caps, max(args.watch, MIN_WATCH_SECONDS))
+        watch(panel.snapshot, opts, color, max(args.watch, MIN_WATCH_SECONDS))
         return 0
-    animate = interactive and not args.no_anim
-    snapshot = fetch_with_boot(panel.snapshot, caps) if animate else panel.snapshot()
-    print_view(build_view(snapshot, opts), caps, animate)
+    # Reading the quotas can take seconds, and a silent terminal looks stuck.
+    waiting = sys.stderr.isatty() and sys.stdout.isatty()
+    if waiting:
+        print("读取中\r", end="", file=sys.stderr, flush=True)
+    snapshot = panel.snapshot()
+    if waiting:
+        print("\x1b[K", end="", file=sys.stderr, flush=True)
+    for line in build_view(snapshot, opts):
+        print(to_ansi(line, color))
     return 0
 
 

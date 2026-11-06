@@ -1,34 +1,26 @@
 # agents-usage
 
-在终端里集中查看 AI coding agent（Claude Code、Codex、Grok）的配额和 Token 用量，黑客风格，Dracula 配色。
-
-配额部分的思路和新鲜度规则参考了 [aiusage](https://github.com/sergestack/aiusage)（MIT），菜单栏的接口和行为参考了 [ai-usage-menubar](https://github.com/burakgon/ai-usage-menubar)（MIT），未复制其代码。只依赖 Python 标准库。Codex 和 Claude 的图标路径来自 [Simple Icons](https://simpleicons.org)（CC0），各图标和商标归其所有者，这里只用来标识对应的服务。
-
-这是非官方工具，与 Anthropic、OpenAI 和 xAI 无关。Claude 实时配额和 Grok 配额用的是未公开接口，并会读取本机的登录 token，可能随时失效；使用前请自行确认是否符合各服务的条款。
+Claude Code、Codex、Grok 还剩多少额度，什么时候重置。
 
 ```bash
 uv run agents-usage                  # 配额 + 最近 7 天用量
-uv run agents-usage --watch          # 全屏刷新（默认 60 秒）+ 字符雨，按 q 退出
+uv run agents-usage --watch          # 全屏刷新（默认 60 秒），按 q 退出
 uv run agents-usage --watch 30       # 每 30 秒刷新
 uv run agents-usage --days 30        # 统计最近 30 天
 uv run agents-usage --agent codex    # claude / codex / grok / all
 uv run agents-usage --metric total   # billable（默认）/ total / output
 uv run agents-usage --projects       # 同时显示项目明细
-uv run agents-usage --json           # 机器可读
+uv run agents-usage --json           # 完整数据，给脚本和 agent 用
 uv run --group dev pytest
 ```
 
-`uv tool install .` 后可以在任意目录直接运行 `agents-usage`。
-
-启动日志、解密动画和字符雨只在交互式终端中出现，不影响任何数字。`--no-anim` 关闭动画，`--no-color` 或 `NO_COLOR` 关闭颜色。输出到管道时是不带动画和颜色的纯文本。配色按 Dracula 深色背景（`#282A36`）设计。
+`uv tool install .` 后可以在任意目录直接运行 `agents-usage`。终端视图使用终端自身的配色，`--no-color` 或 `NO_COLOR` 关闭颜色，输出到管道时是纯文本。只依赖 Python 标准库。
 
 ## macOS 菜单栏
 
-菜单栏是每个 agent 的图标加一根竖向电量条，长度是最紧张窗口的剩余额度，额度偏低时变色，悬停可看数字。点开是一张额度表：每个窗口一条长条，附剩余百分比和重置时间，长条上的刻度是匀速用量此刻应剩的位置，长条短过刻度说明用得比匀速快。下面依次是 API 折算费用、用量趋势（24h / 7d / 30d）和运行中的任务，点任务跳到它所在的终端。点 agent 进入详情页：全部额度窗口、账号、费用、请求数、Token、模型和项目排行，以及它自己的趋势和任务。面板大小固定，内容多时在内部滚动。齿轮里可以选外观和语言（跟随系统、中文或 English）、填月预算。需要 macOS 14 及以上，只装 Command Line Tools 即可构建。
+概览页是每个 agent 的额度表、运行中和空闲（变淡）的任务，以及今日和本月费用。长条上的刻度是匀速用量此刻应剩的位置。点 agent 进入详情，点项目在 Finder 打开目录，点任务跳到它所在的终端；在 Rex 里会定位到对应的标签和面板，任务在其他会话时，要在 Rex 的“设置 → Server → Client Info”中打开 Remote Control 才能切换过去。
 
-**费用是估算，不是账单。** 这里按[公开 API 价](agents_usage/pricing.py)把日志里的 Token 折算成美元，订阅用户并不按这个价格付费。没有公开价的模型（如 `grok-4.7-build`）不计入，悬停费用可以看到。长上下文和快速模式的加价不计入，所以会略低于实际 API 费用。
-
-运行任务来自终端里的 agent 进程：Claude Code 用它自己记录的状态，Codex 和 Grok 在会话文件 2 分钟内有写入时算运行中。任务标题是 agent 生成的会话短标题，只显示在本机。
+需要 macOS 14 及以上，只装 Command Line Tools 即可构建，目前不提供预编译版本。需要开机启动时，在“系统设置 → 通用 → 登录项”中添加。
 
 ```bash
 uv tool install --force --reinstall .  # app 调用已安装的 agents-usage，Python 代码改动后要重新运行
@@ -36,7 +28,11 @@ macos/build.sh                         # 构建到 ~/Applications，也可以传
 macos/test.sh
 ```
 
-目前不提供预编译版本，需要自行构建。app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，不开启 `--claude-live`。Claude 配额依赖上面的 statusLine 快照，超过 10 分钟未更新会标记为“已过期”。需要开机启动时，在“系统设置 → 通用 → 登录项”中添加。
+app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，不开启 `--claude-live`。
+
+**费用是估算，不是账单。** 这里按[公开 API 价](agents_usage/pricing.py)把日志里的 Token 折算成美元，订阅用户并不按这个价格付费。没有公开价的模型（如 `grok-4.7-build`）不计入，悬停费用可以看到。长上下文和快速模式的加价不计入，所以会略低于实际 API 费用。
+
+运行任务来自终端里的 agent 进程：Claude Code 用它自己记录的状态，Codex 和 Grok 在会话文件 2 分钟内有写入时算运行中。任务标题是 agent 生成的会话短标题，只显示在本机。
 
 ## 数据来源
 
@@ -75,7 +71,13 @@ printf '%s' "$input" | agents-usage capture-claude
 - 缺失的值保持缺失，不会显示成 0% 或 100%。
 - 已过重置时间的窗口会被隐藏；过期的快照会被标记，也不参与“最紧张”的判断。
 - 不会为了刷新用量而启动 agent 会话，不会使用手动重置次数，也不会改变任何限额。
-- 剩余 ≤40% 标记“偏低”，≤20% 标记“紧张”。
+- 剩余 ≤40% 标记 ▲，≤20% 标记 ■。
+
+## 声明
+
+非官方工具，与 Anthropic、OpenAI 和 xAI 无关。Claude 实时配额和 Grok 配额用的是未公开接口，并会读取本机的登录 token，可能随时失效；使用前请自行确认是否符合各服务的条款。
+
+配额部分的思路和新鲜度规则参考了 [aiusage](https://github.com/sergestack/aiusage)（MIT），菜单栏的接口和行为参考了 [ai-usage-menubar](https://github.com/burakgon/ai-usage-menubar)（MIT），未复制其代码。Codex 和 Claude 的图标路径来自 [Simple Icons](https://simpleicons.org)（CC0），各图标和商标归其所有者，这里只用来标识对应的服务。
 
 ## 许可证
 

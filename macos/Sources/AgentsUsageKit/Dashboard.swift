@@ -4,31 +4,9 @@ import SwiftUI
 // line up down the whole panel.
 private enum Column {
     static let label: CGFloat = 22
-    static let percent: CGFloat = 40
+    static let percent: CGFloat = 58
     static let reset: CGFloat = 48
     static let rowInset: CGFloat = 8
-}
-
-private let edgeFadeHeight: CGFloat = 10
-
-/// Content that moves under soft edges rather than being cut off.
-private struct FadingScroll<Content: View>: View {
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        ScrollView {
-            content().padding(.vertical, edgeFadeHeight)
-        }
-        // An always-visible scroller would narrow the content when it comes and goes.
-        .scrollIndicators(.hidden)
-        .mask {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: edgeFadeHeight)
-                Color.black
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: edgeFadeHeight)
-            }
-        }
-    }
 }
 
 private struct SectionDivider: View {
@@ -37,139 +15,129 @@ private struct SectionDivider: View {
     }
 }
 
-private func barColor(_ level: String) -> Color {
-    level == "ok" ? Palette.ink.opacity(0.82) : Palette.level(level)
+private extension View {
+    /// Highlights under the pointer.
+    func rowHover(id: String, state: PanelState) -> some View {
+        background {
+            if state.hoveredRow == id {
+                RoundedRectangle(cornerRadius: 8).fill(Palette.track)
+            }
+        }
+        .onHover { state.setHoveredRow(id, inside: $0) }
+    }
+}
+
+private struct RowButton<Label: View>: View {
+    let id: String
+    @ObservedObject var state: PanelState
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action) {
+            label()
+                .padding(.horizontal, Column.rowInset)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .rowHover(id: id, state: state)
+    }
+}
+
+/// Reveals a project's folder, leaving the panel the way opening a terminal does.
+private func openFolder(_ url: URL, state: PanelState) {
+    NSWorkspace.shared.open(url)
+    state.onDismiss()
 }
 
 struct LogoMark: View {
     let kind: AgentKind
-    var tinted = false
 
     var body: some View {
-        AgentLogo(kind).fill(tinted ? Palette.agent(kind) : Palette.ink, style: FillStyle(eoFill: true))
+        AgentLogo(kind).fill(.primary, style: FillStyle(eoFill: true)).frame(width: 14, height: 14)
     }
 }
 
-/// A logo beside a level, read like a battery icon. An agent with no reading
-/// has no level at all, which is different from an empty one.
-public struct StatusMeters: View {
-    let summaries: [AgentSummary]
-
-    public init(summaries: [AgentSummary]) {
-        self.summaries = summaries
-    }
-
-    public var body: some View {
-        HStack(spacing: 8) {
-            if summaries.isEmpty {
-                Text(verbatim: "—")
-            }
-            ForEach(summaries) { summary in
-                HStack(spacing: 2.5) {
-                    LogoMark(kind: summary.kind).frame(width: 13, height: 13)
-                    if let window = summary.window { meter(window) }
-                }
-                .opacity(summary.window == nil || summary.stale ? 0.45 : 1)
-            }
-        }
-        .padding(.horizontal, 6)
-        .fixedSize()
-    }
-
-    private func meter(_ window: Snapshot.QuotaWindow) -> some View {
-        ZStack(alignment: .bottom) {
-            Capsule().fill(Palette.ink.opacity(0.25))
-            Capsule()
-                .fill(barColor(window.level))
-                .frame(height: max(3.5, 15 * min(max(window.leftPercent, 0), 100) / 100))
-        }
-        .frame(width: 3.5, height: 15)
-    }
-}
-
-public struct StatusBarView: View {
-    @ObservedObject var store: Store
-
-    public init(store: Store) {
-        self.store = store
-    }
-
-    public var body: some View {
-        StatusMeters(summaries: store.summaries)
-    }
-}
-
-struct PanelHeader: View {
-    let snapshot: Snapshot?
-    let error: String?
-    let busy: Bool
+/// Back to the overview, which is the only page without one.
+struct PageHeader<Title: View>: View {
     @ObservedObject var state: PanelState
-    let onRefresh: () -> Void
+    @ViewBuilder let title: () -> Title
 
     var body: some View {
-        HStack(spacing: 2) {
-            switch state.page {
-            case .overview: overviewTitle
-            case .agent(let kind): back { agentTitle(kind) }
-            case .settings: back { Text(tr("设置", "Settings")).font(.system(size: 13, weight: .semibold)) }
-            }
-            Spacer(minLength: 4)
-            if busy {
-                ProgressView().controlSize(.mini).frame(width: 24, height: 24)
-            } else {
-                iconButton("arrow.clockwise", help: tr("刷新", "Refresh"), action: onRefresh)
-            }
-            if state.page != .settings {
-                iconButton("gearshape", help: tr("设置", "Settings")) { state.page = .settings }
-            }
-        }
-        .padding(.leading, Column.rowInset)
-        .padding(.trailing, 2)
-        .frame(height: 26)
-    }
-
-    private var overviewTitle: some View {
-        HStack(spacing: 6) {
-            Text(verbatim: "Agents Usage").font(.system(size: 13, weight: .semibold))
-            if let problem = statusProblem {
-                Circle().fill(problem.color).frame(width: 6, height: 6)
-                Text(problem.text).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
-            }
-        }
-    }
-
-    /// Silent while live: words only when something is off.
-    private var statusProblem: (text: String, color: Color)? {
-        if error != nil { return (tr("刷新失败", "Refresh failed"), Palette.red) }
-        guard let snapshot else { return (tr("读取中", "Loading"), Palette.track) }
-        let age = Int(Date().timeIntervalSince1970) - snapshot.generatedAt
-        if age < 60 { return nil }
-        return (tr("\(durationText(seconds: age))前", "\(durationText(seconds: age)) ago"), Palette.amber)
-    }
-
-    private func agentTitle(_ kind: AgentKind) -> some View {
-        HStack(spacing: 6) {
-            LogoMark(kind: kind).frame(width: 14, height: 14)
-            Text(kind.title).font(.system(size: 13, weight: .semibold))
-        }
-    }
-
-    private func back<Title: View>(@ViewBuilder title: () -> Title) -> some View {
         Button {
             state.page = .overview
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.muted)
-                title()
+                title().font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
             }
-            .frame(height: 26)
+            .frame(height: 28)
+            .padding(.horizontal, Column.rowInset)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .keyboardShortcut(.leftArrow, modifiers: .command)
     }
+}
 
-    private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+struct Dashboard: View {
+    let snapshot: Snapshot?
+    let error: String?
+    let busy: Bool
+    let budget: Double?
+    let onRefresh: () -> Void
+    @ObservedObject var state: PanelState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let error {
+                Text(error)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.critical)
+                    .lineLimit(3)
+                    .padding(.horizontal, Column.rowInset)
+            }
+            if let snapshot {
+                VStack(spacing: 2) {
+                    ForEach(snapshot.summaries) { AgentRow(summary: $0, snapshot: snapshot, state: state) }
+                }
+                SectionDivider()
+                ScrollView {
+                    TaskList(snapshot: snapshot, agent: nil, state: state)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxHeight: .infinity)
+            } else {
+                Spacer(minLength: 0)
+                if error == nil {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                }
+                Spacer(minLength: 0)
+            }
+            SectionDivider()
+            footer
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 2) {
+            if let snapshot {
+                CostLine(costs: snapshot.costs, budget: budget)
+            }
+            Spacer(minLength: 4)
+            if busy {
+                ProgressView().controlSize(.mini).frame(width: 24, height: 24)
+            } else {
+                iconButton("arrow.clockwise", label: tr("刷新", "Refresh"), action: onRefresh)
+            }
+            iconButton("gearshape", label: tr("设置", "Settings")) { state.page = .settings }
+        }
+        .padding(.leading, Column.rowInset)
+        .padding(.trailing, 2)
+    }
+
+    private func iconButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12))
@@ -178,59 +146,8 @@ struct PanelHeader: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(help)
+        .accessibilityLabel(label)
     }
-}
-
-struct Dashboard: View {
-    let snapshot: Snapshot?
-    let error: String?
-    let budget: Double?
-    @ObservedObject var state: PanelState
-
-    var body: some View {
-        if let snapshot {
-            VStack(alignment: .leading, spacing: 6) {
-                errorLine
-                VStack(spacing: 2) {
-                    ForEach(snapshot.summaries) { AgentRow(summary: $0, snapshot: snapshot, state: state) }
-                }
-                SectionDivider()
-                CostRow(snapshot: snapshot, budget: budget).padding(.horizontal, Column.rowInset)
-                SectionDivider()
-                TrendSection(snapshot: snapshot, agent: nil, state: state).padding(.horizontal, Column.rowInset)
-                SectionDivider()
-                FadingScroll {
-                    TaskList(snapshot: snapshot, agent: nil, state: state)
-                }
-                .padding(.vertical, -edgeFadeHeight + 4)
-                .frame(maxHeight: .infinity)
-            }
-        } else if let error {
-            Text(error)
-                .font(.system(size: 12))
-                .foregroundStyle(Palette.red)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(Column.rowInset)
-        } else {
-            ProgressView().controlSize(.small).frame(maxWidth: .infinity, minHeight: 120)
-        }
-    }
-
-    @ViewBuilder
-    private var errorLine: some View {
-        if let error {
-            Text(tr("显示上次数据：\(error)", "Showing last data: \(error)"))
-                .font(.system(size: 11))
-                .foregroundStyle(Palette.red)
-                .lineLimit(2)
-                .padding(.horizontal, Column.rowInset)
-        }
-    }
-}
-
-private func planText(_ plan: String) -> String {
-    plan == plan.lowercased() ? plan.capitalized : plan
 }
 
 /// One agent at a glance. The whole row opens its page.
@@ -239,59 +156,35 @@ struct AgentRow: View {
     let snapshot: Snapshot
     @ObservedObject var state: PanelState
 
-    private var hoverID: String { "agent-" + summary.id }
-
     var body: some View {
-        Button {
+        RowButton(id: "agent-" + summary.id, state: state) {
             state.hoveredRow = nil
             state.page = .agent(summary.kind)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
-                title
+                HStack(spacing: 0) {
+                    LogoMark(kind: summary.kind).frame(width: Column.label, alignment: .leading)
+                    Text(summary.kind.title).font(.system(size: 13, weight: .medium))
+                    if summary.stale { StaleMark().padding(.leading, 6) }
+                    Spacer(minLength: 0)
+                }
                 ForEach(summary.glanceWindows) { QuotaRow(window: $0, now: snapshot.generatedAt, stale: summary.stale) }
-                if summary.window == nil { missing }
-            }
-            .padding(.horizontal, Column.rowInset)
-            .padding(.vertical, 5)
-            .contentShape(RoundedRectangle(cornerRadius: 10))
-            .background {
-                if state.hoveredRow == hoverID {
-                    RoundedRectangle(cornerRadius: 10).fill(Palette.track.opacity(0.5))
+                if summary.window == nil {
+                    Text(summary.accounts.first?.note.map(localizedNote) ?? "—")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
+                        .lineLimit(2)
+                        .padding(.leading, Column.label)
                 }
             }
-        }
-        .buttonStyle(.plain)
-        .onHover { state.setHoveredRow(hoverID, inside: $0) }
-    }
-
-    private var title: some View {
-        HStack(spacing: 0) {
-            LogoMark(kind: summary.kind)
-                .frame(width: 14, height: 14)
-                .frame(width: Column.label, alignment: .leading)
-            Text(summary.kind.title).font(.system(size: 13, weight: .medium))
-            if let plan = summary.accounts.first?.plan {
-                Text(planText(plan)).font(.system(size: 11)).foregroundStyle(Palette.muted).padding(.leading, 6)
-            }
-            if summary.stale {
-                Text(tr("已过期", "Stale")).font(.system(size: 11)).foregroundStyle(Palette.amber).padding(.leading, 6)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Palette.muted)
-                .opacity(state.hoveredRow == hoverID ? 1 : 0)
+            .padding(.vertical, 5)
         }
     }
+}
 
-    private var missing: some View {
-        let note = summary.accounts.first?.note.map(localizedNote) ?? "—"
-        return Text(note)
-            .font(.system(size: 11))
-            .foregroundStyle(Palette.muted)
-            .lineLimit(1)
-            .padding(.leading, Column.label)
-            .help(note)
+private struct StaleMark: View {
+    var body: some View {
+        Text(tr("已过期", "Stale")).font(.system(size: 11)).foregroundStyle(Palette.warning)
     }
 }
 
@@ -304,6 +197,8 @@ struct QuotaRow: View {
     var body: some View {
         let label = shortWindowLabel(window.label)
         let pace = window.evenPaceLeft(now: now)
+        let percent = levelMark(window.level) + percentText(window.leftPercent)
+        let reset = window.resetsAt.map { durationText(seconds: $0 - now) } ?? "—"
         HStack(spacing: 0) {
             Text(label)
                 .font(.system(size: 11).monospacedDigit())
@@ -312,15 +207,13 @@ struct QuotaRow: View {
                 .minimumScaleFactor(0.6)
                 .frame(width: Column.label, alignment: .leading)
                 .help(label)
-            QuotaBar(fraction: window.leftPercent / 100, color: barColor(window.level), pace: pace.map { $0 / 100 })
-                .help(pace.map { tr("匀速用量的话，现在应剩 \(percentText($0))", "At an even pace, \(percentText($0)) would be left now") } ?? "")
-            Text(levelMark(window.level) + percentText(window.leftPercent))
+            QuotaBar(fraction: window.leftPercent / 100, color: window.level == "ok" ? Palette.bar : Palette.level(window.level), pace: pace.map { $0 / 100 })
+            Text(percent)
                 .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                .foregroundStyle(window.level == "ok" ? Palette.ink : Palette.level(window.level))
+                .foregroundStyle(Palette.level(window.level))
                 .lineLimit(1)
-                .fixedSize()
                 .frame(width: Column.percent, alignment: .trailing)
-            Text(window.resetsAt.map { durationText(seconds: $0 - now) } ?? "—")
+            Text(reset)
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(Palette.muted)
                 .lineLimit(1)
@@ -328,6 +221,9 @@ struct QuotaRow: View {
         }
         .frame(height: 17)
         .opacity(stale ? 0.5 : 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tr("\(label)，剩余 \(percent)，\(reset) 后重置", "\(label), \(percent) left, resets in \(reset)"))
+        .accessibilityValue(pace.map { tr("匀速用量应剩 \(percentText($0))", "\(percentText($0)) at an even pace") } ?? "")
     }
 }
 
@@ -366,112 +262,70 @@ struct QuotaBar: View {
     }
 }
 
-struct CostRow: View {
-    let snapshot: Snapshot
-    let budget: Double?
+/// `今日 ≈$0.55  本月 ≈$257 / $500`. ≈ because these are list prices applied to
+/// the logs, not a bill.
+struct CostLine: View {
+    let costs: CostSummary
+    var budget: Double?
 
     var body: some View {
-        let costs = snapshot.costs
-        HStack(alignment: .top, spacing: 0) {
-            figure(tr("今日 API", "Today API")) { amount(costs.today) }
-            figure(tr("本月 API", "Month API")) { month(costs.month) }
+        HStack(spacing: 12) {
+            figure(tr("今日", "Today"), costs.today)
+            figure(tr("本月", "Month"), costs.month, limit: budget)
         }
-        .help(costNote(costs))
+        .font(.system(size: 12).monospacedDigit())
+        .lineLimit(1)
+        .help(costs.unpricedModels.isEmpty ? "" : tr("未计入 ", "Excludes ") + costs.unpricedModels.joined(separator: tr("、", ", ")))
     }
 
-    private func figure<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.system(size: 11)).foregroundStyle(Palette.muted)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// ≈ because these are list prices applied to the logs, not a bill.
-    private func amount(_ value: Double?) -> some View {
-        Text(value.map { "≈" + moneyText($0) } ?? "—")
-            .font(.system(size: 18, weight: .semibold).monospacedDigit())
-            .lineLimit(1)
-    }
-
-    private func month(_ value: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                amount(value)
-                if let budget {
-                    Text(verbatim: "/ \(moneyText(budget))")
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(Palette.muted)
-                        .lineLimit(1)
-                }
-            }
-            if let budget, let value {
-                QuotaBar(fraction: value / budget, color: value > budget ? Palette.red : Palette.ink, height: 3)
+    private func figure(_ title: String, _ value: Double?, limit: Double? = nil) -> some View {
+        HStack(spacing: 4) {
+            Text(title).foregroundStyle(Palette.muted)
+            Text(value.map { "≈" + moneyText($0) } ?? "—")
+                .fontWeight(.medium)
+                .foregroundStyle(over(value, limit) ? Palette.critical : Color.primary)
+            if let limit {
+                Text(verbatim: "/ \(moneyText(limit))").foregroundStyle(Palette.muted)
             }
         }
     }
 
-    private func costNote(_ costs: CostSummary) -> String {
-        let note = tr("按公开 API 价估算，不是账单", "Estimated at public API prices, not a bill")
-        guard !costs.unpricedModels.isEmpty else { return note }
-        return note + tr("；未计入 ", "; excludes ") + costs.unpricedModels.joined(separator: tr("、", ", "))
+    private func over(_ value: Double?, _ limit: Double?) -> Bool {
+        guard let value, let limit else { return false }
+        return value > limit
     }
 }
 
 struct TrendSection: View {
     let snapshot: Snapshot
-    let agent: AgentKind?
+    let agent: AgentKind
     @ObservedObject var state: PanelState
 
     private static let chartHeight: CGFloat = 46
 
     var body: some View {
         let trend = Trend(usage: snapshot.usage, range: state.range, agent: agent, now: snapshot.generatedAt)
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 readout(trend)
                 Spacer(minLength: 0)
                 rangePicker
             }
             chart(trend)
-            axis(trend)
         }
     }
 
-    /// The range's totals, or the bar under the pointer.
+    /// The range's total, or the bar under the pointer.
     private func readout(_ trend: Trend) -> some View {
         Group {
             if let hovered = state.hoveredBar, trend.bars.indices.contains(hovered) {
-                Text(verbatim: "\(trend.bars[hovered].label) · \(compactText(trend.bars[hovered].total)) tokens")
+                Text(verbatim: "\(trend.bars[hovered].label)  \(compactText(trend.bars[hovered].total))")
             } else {
-                Text(verbatim: "\(compactText(trend.total)) tokens · " + tr("\(trend.sessions) 次会话", "\(trend.sessions) sessions"))
+                Text(verbatim: "\(compactText(trend.total)) tokens")
             }
         }
-        .font(.system(size: 11).monospacedDigit())
-        .foregroundStyle(Palette.muted)
+        .font(.system(size: 12).monospacedDigit())
         .lineLimit(1)
-    }
-
-    private func axis(_ trend: Trend) -> some View {
-        ZStack {
-            HStack {
-                Text(trend.startLabel)
-                Spacer(minLength: 0)
-                Text(tr("现在", "Now"))
-            }
-            if agent == nil { legend }
-        }
-        .font(.system(size: 10).monospacedDigit())
-        .foregroundStyle(Palette.muted)
-    }
-
-    /// The agents' own marks in their chart colors, in stacking order.
-    private var legend: some View {
-        HStack(spacing: 7) {
-            ForEach(AgentKind.allCases) { kind in
-                LogoMark(kind: kind, tinted: true).frame(width: 11, height: 11).help(kind.title)
-            }
-        }
     }
 
     private var rangePicker: some View {
@@ -483,10 +337,9 @@ struct TrendSection: View {
                 } label: {
                     Text(range.title)
                         .font(.system(size: 11, weight: state.range == range ? .semibold : .regular))
-                        .foregroundStyle(state.range == range ? Palette.ink : Palette.muted)
+                        .foregroundStyle(state.range == range ? Color.primary : Palette.muted)
                         .frame(width: 30, height: 18)
-                        .background(state.range == range ? Palette.track : Color.clear, in: Capsule())
-                        .contentShape(Capsule())
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -498,11 +351,11 @@ struct TrendSection: View {
         let peak = max(trend.bars.map(\.total).max() ?? 0, 1)
         return HStack(alignment: .bottom, spacing: 1.5) {
             ForEach(trend.bars) { bar in
-                stack(bar, peak: peak)
+                UnevenRoundedRectangle(topLeadingRadius: 1.5, topTrailingRadius: 1.5)
+                    .fill(state.hoveredBar == bar.id ? Color.primary : Palette.bar)
+                    .frame(height: bar.total > 0 ? max(1.5, Self.chartHeight * CGFloat(bar.total) / CGFloat(peak)) : 0)
                     .frame(maxWidth: .infinity)
                     .frame(height: Self.chartHeight, alignment: .bottom)
-                    .background(state.hoveredBar == bar.id ? Palette.track.opacity(0.6) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 2))
                     .contentShape(Rectangle())
                     .onHover { inside in
                         if inside {
@@ -513,109 +366,73 @@ struct TrendSection: View {
                     }
             }
         }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Palette.hairline).frame(height: 1)
-        }
-    }
-
-    private func stack(_ bar: TrendBar, peak: Int) -> some View {
-        // The first agent sits on the baseline, as in the legend's order.
-        VStack(spacing: 1) {
-            ForEach(AgentKind.allCases.reversed()) { kind in
-                let amount = bar.amounts[kind] ?? 0
-                if amount > 0 {
-                    Rectangle()
-                        .fill(Palette.agent(kind))
-                        .frame(height: max(1.5, (Self.chartHeight - 3) * CGFloat(amount) / CGFloat(peak)))
-                }
-            }
-        }
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 1.5, topTrailingRadius: 1.5))
     }
 }
 
+/// Running first, as the backend sends them; idle ones are the faint ones.
 struct TaskList: View {
     let snapshot: Snapshot
     let agent: AgentKind?
     @ObservedObject var state: PanelState
 
-    private var candidates: [Snapshot.AgentTask] {
-        (snapshot.tasks ?? []).filter { agent == nil || $0.kind == agent }
-    }
-
     var body: some View {
-        let shown = candidates.filter { state.showIdleTasks || $0.isRunning }
-        let idle = candidates.count { !$0.isRunning }
         VStack(alignment: .leading, spacing: 0) {
-            if shown.isEmpty {
-                Text(snapshot.tasks == nil ? tr("无法读取进程列表", "Could not list processes") : tr("没有运行中的任务", "No running tasks"))
+            if let tasks = snapshot.tasks {
+                ForEach(tasks.filter { agent == nil || $0.kind == agent }) { row($0) }
+            } else {
+                // Not the same as having no tasks, which shows nothing.
+                Text(tr("无法读取进程列表", "Could not list processes"))
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.muted)
                     .padding(.horizontal, Column.rowInset)
-                    .padding(.vertical, 4)
             }
-            ForEach(shown) { row($0) }
-            if idle > 0 { idleToggle(idle) }
         }
     }
 
-    private func idleToggle(_ count: Int) -> some View {
-        Button {
-            state.showIdleTasks.toggle()
-        } label: {
-            HStack(spacing: 3) {
-                Text(tr("\(count) 个空闲", "\(count) idle"))
-                Image(systemName: state.showIdleTasks ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(Palette.muted)
-            .padding(.leading, Column.label + Column.rowInset)
-            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
+    /// The row goes to the terminal, the folder inside it to Finder: a button
+    /// wins over the tap around it, and nesting two buttons would not work.
     private func row(_ task: Snapshot.AgentTask) -> some View {
-        let hoverID = "task-\(task.pid)"
-        return Button {
-            TerminalOpener.open(task)
-        } label: {
+        HStack(spacing: 0) {
             HStack(spacing: 0) {
                 if let kind = task.kind {
-                    LogoMark(kind: kind)
-                        .frame(width: 14, height: 14)
-                        .frame(width: Column.label, alignment: .leading)
+                    LogoMark(kind: kind).frame(width: Column.label, alignment: .leading)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(task.displayTitle).font(.system(size: 12)).lineLimit(1)
-                    Text(subtitle(task)).font(.system(size: 11).monospacedDigit()).foregroundStyle(Palette.muted).lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "arrow.up.forward")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Palette.muted)
-                    .opacity(state.hoveredRow == hoverID ? 1 : 0)
+                Text(task.displayTitle).font(.system(size: 12)).lineLimit(1)
             }
-            .padding(.horizontal, Column.rowInset)
-            .frame(height: 34)
-            .opacity(task.isRunning ? 1 : 0.55)
-            .contentShape(RoundedRectangle(cornerRadius: 10))
-            .background {
-                if state.hoveredRow == hoverID {
-                    RoundedRectangle(cornerRadius: 10).fill(Palette.track.opacity(0.5))
-                }
-            }
+            .accessibilityAddTraits(.isButton)
+            Spacer(minLength: 8)
+            projectLink(task)
         }
-        .buttonStyle(.plain)
-        .help(tr("打开所在终端：\(task.project)", "Open its terminal: \(task.project)"))
-        .onHover { state.setHoveredRow(hoverID, inside: $0) }
+        .frame(height: 26)
+        .opacity(task.isRunning ? 1 : 0.5)
+        .padding(.horizontal, Column.rowInset)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            TerminalOpener.open(task)
+            state.onDismiss()
+        }
+        .rowHover(id: "task-\(task.pid)", state: state)
     }
 
-    private func subtitle(_ task: Snapshot.AgentTask) -> String {
-        let state = task.isRunning ? durationText(seconds: snapshot.generatedAt - task.since) : tr("空闲", "Idle")
-        return "\(task.projectName) · \(state)"
+    @ViewBuilder
+    private func projectLink(_ task: Snapshot.AgentTask) -> some View {
+        let label = HStack(spacing: 3) {
+            Image(systemName: "folder").font(.system(size: 10))
+            if task.title != nil { Text(task.projectName).lineLimit(1) }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(Palette.muted)
+        .frame(height: 26)
+        .contentShape(Rectangle())
+        .help(task.project)
+
+        if let folder = projectFolder(task.project) {
+            Button { openFolder(folder, state: state) } label: { label }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tr("打开目录 \(task.project)", "Open folder \(task.project)"))
+        } else {
+            label
+        }
     }
 }
 
@@ -627,101 +444,104 @@ struct AgentPage: View {
 
     var body: some View {
         let details = AgentDetails(rows: snapshot.usage.rows, kind: kind, today: snapshot.today)
-        FadingScroll {
-            VStack(alignment: .leading, spacing: 10) {
-                if let summary = snapshot.summaries.first(where: { $0.kind == kind }) {
-                    ForEach(summary.accounts) { account($0).padding(.horizontal, Column.rowInset) }
-                    SectionDivider()
-                }
-                stats(details).padding(.horizontal, Column.rowInset)
-                SectionDivider()
-                TrendSection(snapshot: snapshot, agent: kind, state: state).padding(.horizontal, Column.rowInset)
-                if !details.models.isEmpty || !details.projects.isEmpty {
-                    SectionDivider()
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !details.models.isEmpty { ranking(tr("本月模型", "Models this month"), details.models) }
-                        if !details.projects.isEmpty { ranking(tr("本月项目", "Projects this month"), details.projects) }
-                    }
-                    .padding(.horizontal, Column.rowInset)
-                }
-                SectionDivider()
-                TaskList(snapshot: snapshot, agent: kind, state: state)
+        VStack(spacing: 4) {
+            PageHeader(state: state) {
+                LogoMark(kind: kind)
+                Text(kind.title)
             }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if let summary = snapshot.summaries.first(where: { $0.kind == kind }) {
+                        ForEach(summary.accounts) { account($0).padding(.horizontal, Column.rowInset) }
+                        SectionDivider()
+                    }
+                    TrendSection(snapshot: snapshot, agent: kind, state: state).padding(.horizontal, Column.rowInset)
+                    SectionDivider()
+                    // Under the month's cost, the rankings need no title to say which period they cover.
+                    VStack(alignment: .leading, spacing: 10) {
+                        CostLine(costs: details.costs).padding(.horizontal, Column.rowInset)
+                        if !details.models.isEmpty { ranking(details.models, symbol: "cpu") }
+                        if !details.projects.isEmpty { ranking(details.projects, symbol: "folder", opens: projectFolder) }
+                    }
+                    if snapshot.tasks?.contains(where: { $0.kind == kind }) != false {
+                        SectionDivider()
+                        TaskList(snapshot: snapshot, agent: kind, state: state)
+                    }
+                }
+                .padding(.bottom, 6)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 
     private func account(_ account: Snapshot.Account) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             let identity = [account.plan.map(planText), account.email].compactMap { $0 }.joined(separator: " · ")
-            if !identity.isEmpty {
-                Text(identity)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            ForEach(account.windows) { QuotaRow(window: $0, now: snapshot.generatedAt, stale: account.stale) }
-            if let manual = account.manualResets, manual > 0 {
-                caption(tr("\(manual) 次手动重置可用", "\(manual) manual resets available"), Palette.muted)
-            }
-            if account.stale, let captured = account.capturedAt {
-                let age = durationText(seconds: snapshot.generatedAt - captured)
-                caption(tr("数据已过期，\(age)前更新", "Stale, updated \(age) ago"), Palette.amber)
-            }
-            if let note = account.note {
-                caption(localizedNote(note), Palette.muted)
-            }
-        }
-    }
-
-    private func caption(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func stats(_ details: AgentDetails) -> some View {
-        let tokens = snapshot.tokensToday(agent: kind)
-        return Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-            GridRow {
-                stat(tr("今日 API", "Today API"), details.todayCost.map { "≈" + moneyText($0) } ?? "—")
-                stat(tr("本月 API", "Month API"), details.monthCost.map { "≈" + moneyText($0) } ?? "—")
-                stat(tr("本月请求", "Requests"), compactText(details.requests))
-            }
-            GridRow {
-                stat(tr("今日输入", "Input today"), compactText(tokens.input))
-                stat(tr("今日输出", "Output today"), compactText(tokens.output))
-                stat(tr("缓存命中", "Cache hits"), tokens.cacheHit.map { percentText($0 * 100) } ?? "—")
-            }
-        }
-    }
-
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(1)
-            Text(value).font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func ranking(_ title: String, _ entries: [AgentDetails.Entry]) -> some View {
-        let peak = max(entries.map(\.tokens).max() ?? 0, 1)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11)).foregroundStyle(Palette.muted)
-            ForEach(entries) { entry in
-                HStack(spacing: 8) {
-                    Text(entry.name)
-                        .font(.system(size: 12))
+            if !identity.isEmpty || account.stale {
+                HStack(spacing: 6) {
+                    Text(identity)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.muted)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(width: 118, alignment: .leading)
-                        .help(entry.name)
-                    QuotaBar(fraction: Double(entry.tokens) / Double(peak), color: Palette.agent(kind), height: 4)
-                    Text(compactText(entry.tokens))
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(Palette.muted)
-                        .frame(width: 40, alignment: .trailing)
+                    if account.stale { StaleMark() }
+                }
+            }
+            ForEach(account.windows) { QuotaRow(window: $0, now: snapshot.generatedAt, stale: account.stale) }
+            if let note = account.note {
+                Text(localizedNote(note))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func planText(_ plan: String) -> String {
+        plan == plan.lowercased() ? plan.capitalized : plan
+    }
+
+    private func ranking(_ entries: [AgentDetails.Entry], symbol: String,
+                         opens folder: @escaping (String) -> URL? = { _ in nil }) -> some View {
+        let peak = max(entries.map(\.tokens).max() ?? 0, 1)
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(entries) { entry in
+                let row = rankingRow(entry, symbol: symbol, peak: peak)
+                if let url = folder(entry.name) {
+                    RowButton(id: "project-" + entry.id, state: state) {
+                        openFolder(url, state: state)
+                    } label: {
+                        row
+                    }
+                    .accessibilityLabel(tr("打开目录 \(entry.name)", "Open folder \(entry.name)"))
+                } else {
+                    row.padding(.horizontal, Column.rowInset)
                 }
             }
         }
+    }
+
+    private func rankingRow(_ entry: AgentDetails.Entry, symbol: String, peak: Int) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.muted)
+                    .frame(width: 13)
+                Text(entry.name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(width: 136, alignment: .leading)
+            .help(entry.name)
+            QuotaBar(fraction: Double(entry.tokens) / Double(peak), color: Palette.bar, height: 4)
+            Text(compactText(entry.tokens))
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(Palette.muted)
+                .frame(width: 40, alignment: .trailing)
+        }
+        .frame(height: 22)
     }
 }
 
@@ -736,17 +556,18 @@ struct SettingsPage: View {
     @ObservedObject var state: PanelState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
+            PageHeader(state: state) { Text(tr("设置", "Settings")) }
             row(tr("月预算", "Monthly budget")) {
                 Text(verbatim: "$").font(.system(size: 12)).foregroundStyle(Palette.muted)
-                TextField(tr("未设置", "Not set"), text: $state.budgetText)
+                TextField(tr("月预算", "Monthly budget"), text: $state.budgetText, prompt: Text(verbatim: ""))
+                    .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
                     .multilineTextAlignment(.trailing)
                     .frame(width: 80)
                     .onChange(of: state.budgetText) { _, text in onBudget(parseBudget(text)) }
             }
-            SectionDivider()
             row(tr("外观", "Appearance")) {
                 Picker(tr("外观", "Appearance"), selection: Binding(get: { theme }, set: onTheme)) {
                     ForEach(Theme.allCases) { Text($0.title).tag($0) }
@@ -755,7 +576,6 @@ struct SettingsPage: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            SectionDivider()
             row(tr("语言", "Language")) {
                 Picker(tr("语言", "Language"), selection: Binding(get: { language }, set: onLanguage)) {
                     ForEach(Language.allCases) { Text($0.title).tag($0) }
@@ -764,6 +584,7 @@ struct SettingsPage: View {
                 .labelsHidden()
                 .fixedSize()
             }
+            Spacer(minLength: 0)
             SectionDivider()
             Button(action: onQuit) {
                 Text(tr("退出", "Quit"))
@@ -774,7 +595,6 @@ struct SettingsPage: View {
             .buttonStyle(.plain)
             .padding(.horizontal, Column.rowInset)
         }
-        .padding(.top, 6)
         .onAppear {
             state.budgetText = budget.map { String(format: "%g", $0) } ?? ""
         }

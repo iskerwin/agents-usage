@@ -52,22 +52,6 @@ public struct AgentSummary: Identifiable {
     }
 }
 
-public struct TokenTotals: Equatable {
-    public let input: Int  // everything sent but cache reads, so input + output is the billable metric
-    public let output: Int
-    public let cacheHit: Double?  // nil without any input tokens
-
-    init(rows: [Snapshot.Row]) {
-        let fresh = rows.reduce(0) { $0 + $1.fresh }
-        let cacheWrite = rows.reduce(0) { $0 + $1.cacheWrite }
-        let cacheRead = rows.reduce(0) { $0 + $1.cacheRead }
-        input = fresh + cacheWrite
-        output = rows.reduce(0) { $0 + $1.output }
-        let sent = fresh + cacheWrite + cacheRead
-        cacheHit = sent > 0 ? Double(cacheRead) / Double(sent) : nil
-    }
-}
-
 /// API list prices applied to the logged tokens. nil means tokens exist but
 /// none has a known price, which is not the same as costing nothing.
 public struct CostSummary {
@@ -89,7 +73,7 @@ public struct CostSummary {
     }
 }
 
-/// One agent's month: what it cost and where the tokens went.
+/// One agent's costs, and where its month's tokens went.
 public struct AgentDetails {
     public struct Entry: Identifiable, Equatable {
         public let name: String
@@ -100,10 +84,7 @@ public struct AgentDetails {
 
     static let rankingLimit = 4
 
-    public let todayCost: Double?
-    public let monthCost: Double?
-    public let requests: Int
-    public let sessions: Int
+    public let costs: CostSummary
     public let models: [Entry]
     public let projects: [Entry]
 
@@ -111,10 +92,7 @@ public struct AgentDetails {
         let monthPrefix = String(today.prefix(7))
         let own = rows.filter { $0.agent == kind.rawValue }
         let month = own.filter { $0.date.hasPrefix(monthPrefix) }
-        todayCost = CostSummary.sum(own.filter { $0.date == today })
-        monthCost = CostSummary.sum(month)
-        requests = month.reduce(0) { $0 + $1.requests }
-        sessions = Set(month.flatMap(\.sessions)).count
+        costs = CostSummary(rows: own, today: today)
         models = Self.ranking(month, key: \.model)
         projects = Self.ranking(month, key: \.project)
     }
@@ -148,53 +126,38 @@ public enum TrendRange: String, CaseIterable, Identifiable {
 public struct TrendBar: Identifiable, Equatable {
     public let id: Int
     public let label: String
-    public let amounts: [AgentKind: Int]
-
-    public var total: Int { amounts.values.reduce(0, +) }
+    public let total: Int
 }
 
-/// The billable metric over a range: by hour for a day, by day otherwise.
+/// One agent's billable metric over a range: by hour for a day, by day otherwise.
 public struct Trend {
     public let bars: [TrendBar]
     public let total: Int
-    public let sessions: Int
-    public let startLabel: String
 
-    public init(usage: Snapshot.Usage, range: TrendRange, agent: AgentKind?, now: Int) {
-        var sessions = Set<Int>()
+    public init(usage: Snapshot.Usage, range: TrendRange, agent: AgentKind, now: Int) {
         var bars: [TrendBar] = []
-        let wanted = agent.map { [$0] } ?? AgentKind.allCases
-        func amounts(_ pairs: [(agent: String, amount: Int)]) -> [AgentKind: Int] {
-            var result: [AgentKind: Int] = [:]
-            for kind in wanted { result[kind] = pairs.filter { $0.agent == kind.rawValue }.reduce(0) { $0 + $1.amount } }
-            return result
-        }
         switch range {
         case .day:
             let calendar = Calendar.current
             let moment = Date(timeIntervalSince1970: TimeInterval(now))
             let current = Int(calendar.dateInterval(of: .hour, for: moment)?.start.timeIntervalSince1970 ?? TimeInterval(now))
-            let hours = usage.hours ?? []
+            let hours = (usage.hours ?? []).filter { $0.agent == agent.rawValue }
             for index in 0..<24 {
                 let start = current - (23 - index) * 3600
-                let rows = hours.filter { $0.hour == start && wanted.map(\.rawValue).contains($0.agent) }
-                sessions.formUnion(rows.flatMap(\.sessions))
+                let rows = hours.filter { $0.hour == start }
                 bars.append(TrendBar(id: index, label: hourText(epoch: start, now: now),
-                                     amounts: amounts(rows.map { ($0.agent, $0.billable) })))
+                                     total: rows.reduce(0) { $0 + $1.billable }))
             }
         case .week, .month:
             let dates = recentDates(endingAt: localDate(epoch: now), count: range == .week ? 7 : 30)
+            let own = usage.rows.filter { $0.agent == agent.rawValue }
             for (index, date) in dates.enumerated() {
-                let rows = usage.rows.filter { $0.date == date && wanted.map(\.rawValue).contains($0.agent) }
-                sessions.formUnion(rows.flatMap(\.sessions))
-                bars.append(TrendBar(id: index, label: dayText(date),
-                                     amounts: amounts(rows.map { ($0.agent, $0.billable) })))
+                let rows = own.filter { $0.date == date }
+                bars.append(TrendBar(id: index, label: dayText(date), total: rows.reduce(0) { $0 + $1.billable }))
             }
         }
         self.bars = bars
-        self.sessions = sessions.count
         total = bars.reduce(0) { $0 + $1.total }
-        startLabel = bars.first?.label ?? ""
     }
 }
 
@@ -207,10 +170,6 @@ extension Snapshot {
     }
 
     public var today: String { localDate(epoch: generatedAt) }
-
-    public func tokensToday(agent: AgentKind?) -> TokenTotals {
-        TokenTotals(rows: usage.rows.filter { $0.date == today && (agent == nil || $0.agent == agent?.rawValue) })
-    }
 
     public var costs: CostSummary { CostSummary(rows: usage.rows, today: today) }
 }
@@ -241,6 +200,16 @@ extension Snapshot.QuotaWindow {
         guard let resetsAt, let durationSeconds, durationSeconds > 0 else { return nil }
         return min(max(Double(resetsAt - now) / Double(durationSeconds) * 100, 0), 100)
     }
+}
+
+/// A project's folder, if it names one that still exists. Logs outlive folders,
+/// and the folded tail of a ranking names none at all.
+func projectFolder(_ project: String) -> URL? {
+    guard project == "~" || project.hasPrefix("~/") || project.hasPrefix("/") else { return nil }
+    let path = NSString(string: project).expandingTildeInPath
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+    return URL(fileURLWithPath: path, isDirectory: true)
 }
 
 /// `YYYY-MM-DD` in the local timezone, the same day boundary as the log rollup.

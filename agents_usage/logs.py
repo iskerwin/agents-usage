@@ -295,10 +295,6 @@ class Scanner:
     def __init__(self) -> None:
         self._files: dict[Path, tuple[tuple[int, int], ParsedFile]] = {}
 
-    @property
-    def file_count(self) -> int:
-        return len(self._files)
-
     def _parsed(self) -> list[ParsedFile]:
         wanted = ([(p, parse_claude) for p in claude_files()] + [(p, parse_codex) for p in codex_files()]
                   + [(p, parse_grok) for p in grok_files()])
