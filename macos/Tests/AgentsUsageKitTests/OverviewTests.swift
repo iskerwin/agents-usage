@@ -305,56 +305,93 @@ private func settle() async {
     try? await Task.sleep(nanoseconds: 60_000_000)
 }
 
-@MainActor @Test func hoverOpensSwitchesAndClosesAfterADelay() async {
-    let selection = AgentSelection(openDelay: 0.01, closeDelay: 0.01)
-    selection.hover(.codex, inside: true)
+@MainActor private func selection() -> AgentSelection {
+    let selection = AgentSelection(delay: 0.01)
+    selection.setRows([.codex: CGRect(x: 6, y: 0, width: 300, height: 50),
+                       .claude: CGRect(x: 6, y: 50, width: 300, height: 50)])
+    return selection
+}
+
+private let onCodex = CGPoint(x: 100, y: 25)
+private let onClaude = CGPoint(x: 100, y: 75)
+private let onTasks = CGPoint(x: 100, y: 200)
+
+@MainActor @Test func theRowUnderThePointerIsTheOneShown() async {
+    let selection = selection()
+    selection.pointerMoved(to: onCodex)
     #expect(selection.shown == nil)
     await settle()
     #expect(selection.shown == .codex)
-    // The next row can report the pointer before the last one lets go.
-    selection.hover(.claude, inside: true)
-    selection.hover(.codex, inside: false)
-    #expect(selection.shown == .claude)
+    selection.pointerMoved(to: onClaude)
     await settle()
     #expect(selection.shown == .claude)
-    selection.hover(.claude, inside: false)
+    selection.pointerMoved(to: onTasks)
     await settle()
     #expect(selection.shown == nil)
 }
 
-@MainActor @Test func passingOverARowOpensNothing() async {
-    let selection = AgentSelection(openDelay: 0.03, closeDelay: 0.01)
-    selection.hover(.codex, inside: true)
-    selection.hover(.codex, inside: false)
-    await settle()
-    #expect(selection.shown == nil)
+@MainActor @Test func movingWithinARowDoesNotRestartTheDelay() async {
+    let selection = AgentSelection(delay: 0.03)
+    selection.setRows([.codex: CGRect(x: 0, y: 0, width: 300, height: 50)])
+    for x in 0..<8 {
+        selection.pointerMoved(to: CGPoint(x: x * 10, y: 25))
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    #expect(selection.shown == .codex)
 }
 
-@MainActor @Test func detailStaysWhileThePointerIsInside() async {
-    let selection = AgentSelection(openDelay: 0, closeDelay: 0.01)
-    selection.hover(.grok, inside: true)
-    await settle()
-    selection.hover(.grok, inside: false)
-    selection.pointerInDetail(true)
-    await settle()
-    #expect(selection.shown == .grok)
-    selection.pointerInDetail(false)
-    await settle()
-    #expect(selection.shown == nil)
-}
-
-@MainActor @Test func clickKeepsTheDetailUntilClickedAgain() async {
-    let selection = AgentSelection(openDelay: 0, closeDelay: 0.01)
+@MainActor @Test func passingOverARowOnTheWayToTheDetailChangesNothing() async {
+    let selection = selection()
     selection.click(.codex)
-    #expect(selection.shown == .codex)
-    selection.hover(.claude, inside: true)
-    #expect(selection.shown == .claude)
-    selection.hover(.claude, inside: false)
+    selection.pointerMoved(to: onClaude)
+    selection.pointerEnteredDetail()
     await settle()
     #expect(selection.shown == .codex)
+    selection.pointerMoved(to: onCodex)
+    await settle()
+    #expect(selection.shown == .codex)
+}
+
+@MainActor @Test func comingBackToTheShownRowCancelsTheSwitch() async {
+    let selection = selection()
     selection.click(.codex)
-    #expect(selection.shown == nil)
-    selection.click(.grok)
+    selection.pointerMoved(to: onClaude)
+    selection.pointerMoved(to: onCodex)
+    await settle()
+    #expect(selection.shown == .codex)
+}
+
+@MainActor @Test func clickShowsItsRowAtOnceAndStaysPut() {
+    let selection = selection()
+    selection.pointerMoved(to: onCodex)
+    selection.click(.claude)
+    #expect(selection.shown == .claude)
+    selection.click(.claude)
+    #expect(selection.shown == .claude)
     selection.clear()
     #expect(selection.shown == nil)
+}
+
+@Test func detailTouchesThePanelOnTheRightWhenThereIsRoom() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 870)
+    let panel = NSRect(x: 400, y: 480, width: 320, height: 382)
+    let frame = detailFrame(panel: panel, rowTop: 50, size: NSSize(width: 320, height: 480), screen: screen)
+    #expect(frame.minX == panel.maxX - 4)
+    #expect(frame.maxY == panel.maxY - 50)
+}
+
+@Test func detailGoesLeftOnlyWithoutRoomOnTheRight() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 870)
+    let panel = NSRect(x: 1100, y: 480, width: 320, height: 382)
+    let frame = detailFrame(panel: panel, rowTop: 0, size: NSSize(width: 320, height: 480), screen: screen)
+    #expect(frame.maxX == panel.minX + 4)
+}
+
+@Test func detailStaysOnASecondScreenAndAboveTheBottom() {
+    let screen = NSRect(x: -1000, y: 0, width: 1000, height: 600)
+    let panel = NSRect(x: -340, y: 210, width: 320, height: 382)
+    let frame = detailFrame(panel: panel, rowTop: 300, size: NSSize(width: 320, height: 480), screen: screen)
+    #expect(frame.maxX == panel.minX + 4)
+    #expect(frame.minY == 8)
+    #expect(frame.minX >= screen.minX)
 }

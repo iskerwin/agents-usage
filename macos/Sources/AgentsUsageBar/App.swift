@@ -24,7 +24,6 @@ private final class AppController: NSObject, NSApplicationDelegate {
     private static let reopenGuardSeconds: TimeInterval = 0.25
     private static let gapBelowMenuBar: CGFloat = 2
     private static let screenMargin: CGFloat = 8
-    private static let gapBetweenPanels: CGFloat = 6
 
     private let store = Store()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -51,7 +50,8 @@ private final class AppController: NSObject, NSApplicationDelegate {
         install(detailHosting, in: detailPanel)
         self.detailHosting = detailHosting
         detailPanel.onClose = dismiss
-        detailPanel.onPointer = { [weak self] in self?.selection.pointerInDetail($0) }
+        panel.onPointerMoved = { [weak self] in self?.selection.pointerMoved(to: $0) }
+        detailPanel.onPointerEntered = { [weak self] in self?.selection.pointerEnteredDetail() }
         selectionSubscription = selection.$shown.sink { [weak self] in self?.showDetail($0) }
 
         if let button = statusItem.button {
@@ -143,19 +143,14 @@ private final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Beside the panel, on the side with room, and level with its top.
     private func showDetail(_ kind: AgentKind?) {
-        guard kind != nil, panel.isVisible else {
+        guard let kind, panel.isVisible else {
             detailPanel.orderOut(nil)
             return
         }
-        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
-        let main = panel.frame
-        let size = Layout.detailSize
-        let height = min(size.height, main.maxY - visible.minY - Self.screenMargin)
-        var x = main.minX - Self.gapBetweenPanels - size.width
-        if x < visible.minX + Self.screenMargin { x = main.maxX + Self.gapBetweenPanels }
-        detailPanel.setFrame(NSRect(x: x, y: main.maxY - height, width: size.width, height: height), display: true)
+        let screen = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+        detailPanel.setFrame(detailFrame(panel: panel.frame, rowTop: selection.rowTop(kind), size: Layout.detailSize, screen: screen),
+                             display: true)
         detailPanel.invalidateShadow()
         detailPanel.orderFront(nil)
     }
@@ -165,7 +160,8 @@ private final class FloatingPanel: NSPanel {
     private static let cornerRadius: CGFloat = 12
 
     var onClose: () -> Void = {}
-    var onPointer: (Bool) -> Void = { _ in }
+    var onPointerEntered: () -> Void = {}
+    var onPointerMoved: (CGPoint) -> Void = { _ in }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -176,6 +172,7 @@ private final class FloatingPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
+        acceptsMouseMovedEvents = true
 
         let surface = NSVisualEffectView()
         surface.material = .popover
@@ -183,18 +180,21 @@ private final class FloatingPanel: NSPanel {
         surface.state = .active
         surface.maskImage = Self.roundedMask()
         contentView = surface
-        surface.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+        surface.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                                owner: self))
     }
 
     // The panel under the pointer takes key, so its rows hover and its first click counts.
     override func mouseEntered(with event: NSEvent) {
         makeKey()
-        onPointer(true)
+        onPointerEntered()
+        // Coming in counts as a position, so the first row reacts without a second movement.
+        mouseMoved(with: event)
     }
 
-    override func mouseExited(with event: NSEvent) {
-        onPointer(false)
+    /// Measured from the top left, the way the content lays itself out.
+    override func mouseMoved(with event: NSEvent) {
+        onPointerMoved(CGPoint(x: event.locationInWindow.x, y: frame.height - event.locationInWindow.y))
     }
 
     // A borderless window declines key by default, and only a key panel takes the first click.

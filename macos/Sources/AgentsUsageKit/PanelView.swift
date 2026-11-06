@@ -32,6 +32,7 @@ public enum Layout {
     static let padding: CGFloat = 6
     static let taskRowHeight: CGFloat = 26
     static let visibleTasks = 5
+    static let panelSpace = "panel"
     public static let detailSize = NSSize(width: 320, height: 480)
 }
 
@@ -115,6 +116,8 @@ public struct PanelView: View {
             .padding(Layout.padding)
             .frame(width: Layout.panelWidth)
             .fixedSize(horizontal: false, vertical: true)
+            .coordinateSpace(name: Layout.panelSpace)
+            .onPreferenceChange(AgentRowFrames.self) { selection.setRows($0) }
             .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
             .onPreferenceChange(HeightKey.self) { onHeight($0) }
             .frame(maxHeight: .infinity, alignment: .top)

@@ -1,78 +1,73 @@
-import Foundation
+import AppKit
 
-/// Which agent the detail panel shows: the one under the pointer, else the one
-/// clicked. It stays while the pointer is inside the panel, and small delays let
-/// the pointer cross the rows and the gap between the panels without flicker.
+/// Which agent the detail panel shows, like a menu and its submenu: the row under
+/// the pointer, found from where the pointer is rather than from what entered or
+/// left, so any movement puts it right. A short delay lets the pointer cross other
+/// rows on its way into the panel.
 @MainActor
 public final class AgentSelection: ObservableObject {
     @Published public private(set) var shown: AgentKind?
 
-    private let openDelay: TimeInterval
-    private let closeDelay: TimeInterval
-    private var hovered: AgentKind?
-    private var pinned: AgentKind?
-    private var inDetail = false
+    private let delay: TimeInterval
+    private var rows: [AgentKind: CGRect] = [:]
+    private var target: AgentKind?
     private var pending: Task<Void, Never>?
 
-    public init(openDelay: TimeInterval = 0.12, closeDelay: TimeInterval = 0.25) {
-        self.openDelay = openDelay
-        self.closeDelay = closeDelay
+    public init(delay: TimeInterval = 0.12) {
+        self.delay = delay
     }
 
-    public func hover(_ kind: AgentKind, inside: Bool) {
-        if inside {
-            hovered = kind
-            if shown == nil {
-                settle(after: openDelay)
-            } else {
-                pending?.cancel()
-                update()
-            }
-        } else if hovered == kind {
-            hovered = nil
-            settle(after: closeDelay)
+    /// In the panel's own coordinates, measured from its top left.
+    func setRows(_ rows: [AgentKind: CGRect]) {
+        self.rows = rows
+    }
+
+    /// Where a row starts, measured down from the top of the panel.
+    public func rowTop(_ kind: AgentKind) -> CGFloat {
+        rows[kind]?.minY ?? 0
+    }
+
+    /// The pointer moved inside the main panel. Leaving it changes nothing, as with a submenu.
+    public func pointerMoved(to point: CGPoint) {
+        let next = rows.first { $0.value.contains(point) }?.key
+        guard next != target else { return }
+        target = next
+        pending?.cancel()
+        guard next != shown else { return }
+        pending = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((self?.delay ?? 0) * 1_000_000_000))
+            if !Task.isCancelled { self?.shown = next }
         }
     }
 
-    public func pointerInDetail(_ inside: Bool) {
-        inDetail = inside
-        if inside {
-            pending?.cancel()
-        } else {
-            settle(after: closeDelay)
-        }
+    /// The pointer made it into the detail panel, so what it crossed on the way does not count.
+    public func pointerEnteredDetail() {
+        pending?.cancel()
+        target = shown
     }
 
-    /// The first click keeps the panel open, the second closes it.
     public func click(_ kind: AgentKind) {
         pending?.cancel()
-        if pinned == kind {
-            pinned = nil
-            hovered = nil
-        } else {
-            pinned = kind
-        }
-        update()
+        target = kind
+        shown = kind
     }
 
     public func clear() {
         pending?.cancel()
-        hovered = nil
-        pinned = nil
-        inDetail = false
+        target = nil
         shown = nil
     }
+}
 
-    private func settle(after delay: TimeInterval) {
-        pending?.cancel()
-        pending = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            if !Task.isCancelled { self?.update() }
-        }
+/// Touching the panel at the row's height: to its right, or to its left when the
+/// screen has no room, and moved up rather than running off the bottom.
+public func detailFrame(panel: NSRect, rowTop: CGFloat, size: NSSize, screen: NSRect,
+                        overlap: CGFloat = 4, margin: CGFloat = 8) -> NSRect {
+    let height = min(size.height, screen.height - margin * 2)
+    var x = panel.maxX - overlap
+    if x + size.width > screen.maxX - margin {
+        x = max(panel.minX + overlap - size.width, screen.minX + margin)
     }
-
-    private func update() {
-        let next = hovered ?? (inDetail ? shown : nil) ?? pinned
-        if next != shown { shown = next }
-    }
+    let y = max(panel.maxY - rowTop - height, screen.minY + margin)
+    return NSRect(x: x, y: y, width: size.width, height: height)
 }

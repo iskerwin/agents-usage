@@ -9,6 +9,13 @@ private enum Column {
     static let rowInset: CGFloat = 8
 }
 
+struct AgentRowFrames: PreferenceKey {
+    static let defaultValue: [AgentKind: CGRect] = [:]
+    static func reduce(value: inout [AgentKind: CGRect], nextValue: () -> [AgentKind: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
 private struct SectionDivider: View {
     var body: some View {
         Divider().padding(.horizontal, Column.rowInset)
@@ -163,7 +170,7 @@ struct Dashboard: View {
     }
 }
 
-/// One agent at a glance. Pointing at it shows its details beside the panel, and a click keeps them there.
+/// One agent at a glance. Pointing at it or clicking it shows its details beside the panel.
 struct AgentRow: View {
     let summary: AgentSummary
     let snapshot: Snapshot
@@ -192,7 +199,10 @@ struct AgentRow: View {
             }
             .padding(.vertical, 5)
         }
-        .onHover { selection.hover(summary.kind, inside: $0) }
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: AgentRowFrames.self,
+                                   value: [summary.kind: geometry.frame(in: .named(Layout.panelSpace))])
+        })
     }
 }
 
