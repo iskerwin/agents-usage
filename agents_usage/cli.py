@@ -13,6 +13,7 @@ from agents_usage import __version__
 from agents_usage.logs import Scanner, rollup
 from agents_usage.quota import QuotaService, capture_claude_statusline, timezone_name
 from agents_usage.render import METRICS, Caps, ViewOptions, build_view
+from agents_usage.tasks import list_tasks
 from agents_usage.tui import fetch_with_boot, print_view, terminal_size, watch
 
 MIN_WATCH_SECONDS = 5
@@ -42,6 +43,7 @@ class Panel:
             "timezone": timezone_name(),
             **quota,
             "usage": usage,
+            "tasks": list_tasks(self.scanner),
         }
 
 

@@ -4,8 +4,8 @@ import Foundation
 public struct Snapshot: Decodable {
     public let generatedAt: Int
     public let accounts: [Account]
-    public let mostUrgent: Urgent?
     public let usage: Usage
+    public let tasks: [AgentTask]?
 
     public struct Account: Decodable, Identifiable {
         public let agent: String
@@ -31,14 +31,34 @@ public struct Snapshot: Decodable {
         public var id: String { label }
     }
 
-    public struct Urgent: Decodable {
-        public let leftPercent: Double
-        public let level: String
-    }
-
     public struct Usage: Decodable {
         public let rows: [Row]
-        public let firstDate: String?
+        public let hours: [HourRow]?
+    }
+
+    public struct AgentTask: Decodable, Identifiable {
+        public let agent: String
+        public let pid: Int32
+        public let title: String?
+        public let project: String
+        public let cwd: String?
+        public let state: String
+        public let since: Int
+
+        public var id: Int32 { pid }
+    }
+
+    public struct HourRow: Decodable {
+        public let hour: Int
+        public let agent: String
+        public let fresh: Int
+        public let cacheRead: Int
+        public let cacheWrite: Int
+        public let output: Int
+        public let requests: Int
+        public let sessions: [Int]
+
+        public var billable: Int { fresh + cacheWrite + output }
     }
 
     public struct Row: Decodable {
@@ -52,6 +72,7 @@ public struct Snapshot: Decodable {
         public let output: Int
         public let requests: Int
         public let sessions: [Int]
+        public let cost: Double?  // nil when the model has no public price
 
         /// The CLI's default "billable" metric: everything but cache reads.
         public var billable: Int { fresh + cacheWrite + output }
@@ -61,11 +82,6 @@ public struct Snapshot: Decodable {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(Snapshot.self, from: data)
-    }
-
-    public var menuTitle: String {
-        guard let urgent = mostUrgent else { return "—" }
-        return levelMark(urgent.level) + percentText(urgent.leftPercent)
     }
 }
 
@@ -90,11 +106,4 @@ public func compactText(_ n: Int) -> String {
         return String(format: "%g", (v * scale).rounded() / scale) + unit
     }
     return String(n)
-}
-
-public func resetText(seconds: Int) -> String {
-    let seconds = max(seconds, 0)
-    if seconds >= 86400 { return "\(seconds / 86400) 天" }
-    if seconds >= 3600 { return "\(seconds / 3600) 小时" }
-    return "\(max(seconds / 60, 1)) 分钟"
 }

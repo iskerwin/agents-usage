@@ -9,9 +9,9 @@ public enum Theme: String, CaseIterable, Identifiable {
 
     public var title: String {
         switch self {
-        case .system: return "跟随系统"
-        case .light: return "亮色"
-        case .dark: return "暗色"
+        case .system: return tr("跟随系统", "System")
+        case .light: return tr("亮色", "Light")
+        case .dark: return tr("暗色", "Dark")
         }
     }
 

@@ -25,7 +25,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from agents_usage.pricing import cost_usd
+
 CODEX_LIMIT_ID = "codex"
+HOURLY_SECONDS = 25 * 3600  # 24 full hours, plus the one in progress
 
 
 @dataclass
@@ -41,6 +44,11 @@ class Rec:
     cache_write: int = 0
     output: int = 0
     requests: int = 1
+    cache_write_long: int = 0  # the part of cache_write with Claude's 1 hour retention
+
+    @property
+    def cost(self) -> Optional[float]:
+        return cost_usd(self.model, self.fresh, self.cache_read, self.cache_write, self.output, self.cache_write_long)
 
     def merge(self, other: "Rec") -> None:
         """Keep the largest value seen: streaming lines of one response only
@@ -51,6 +59,7 @@ class Rec:
         self.cache_write = max(self.cache_write, other.cache_write)
         self.output = max(self.output, other.output)
         self.requests = max(self.requests, other.requests)
+        self.cache_write_long = max(self.cache_write_long, other.cache_write_long)
 
 
 @dataclass
@@ -58,6 +67,14 @@ class ParsedFile:
     records: list[Rec] = field(default_factory=list)
     # Newest Codex (timestamp, rate_limits) in this file, if any.
     rate_limits: Optional[tuple[str, dict[str, Any]]] = None
+    # The short title Claude Code generates for a session, if any.
+    title: Optional[str] = None
+
+
+@dataclass
+class LatestSession:
+    session: str
+    written_at: int
 
 
 def _int(value: Any) -> int:
@@ -102,7 +119,11 @@ def _json_lines(path: Path, needles: tuple[str, ...]) -> Iterable[dict[str, Any]
 
 def parse_claude(path: Path) -> ParsedFile:
     parsed = ParsedFile()
-    for obj in _json_lines(path, ('"usage"',)):
+    for obj in _json_lines(path, ('"usage"', '"ai-title"')):
+        if obj.get("type") == "ai-title":
+            title = obj.get("aiTitle")
+            parsed.title = title if isinstance(title, str) and title else parsed.title
+            continue
         msg = obj.get("message")
         usage = msg.get("usage") if isinstance(msg, dict) else None
         ts = _epoch(obj.get("timestamp"))
@@ -114,6 +135,7 @@ def parse_claude(path: Path) -> ParsedFile:
         msg_id, request_id = msg.get("id"), obj.get("requestId")
         if not msg_id and not request_id:
             continue
+        creation = usage.get("cache_creation")
         rec = Rec(
             key=f"{msg_id}:{request_id}",
             agent="claude",
@@ -125,6 +147,7 @@ def parse_claude(path: Path) -> ParsedFile:
             cache_read=_int(usage.get("cache_read_input_tokens")),
             cache_write=_int(usage.get("cache_creation_input_tokens")),
             output=_int(usage.get("output_tokens")),
+            cache_write_long=_int(creation.get("ephemeral_1h_input_tokens")) if isinstance(creation, dict) else 0,
         )
         if rec.fresh or rec.cache_read or rec.cache_write or rec.output:
             parsed.records.append(rec)
@@ -306,14 +329,42 @@ class Scanner:
                     existing.merge(rec)
         return list(merged.values())
 
+    def claude_title(self, session: str) -> Optional[str]:
+        """From the files already parsed, so call after ``records``."""
+        for path, (_, parsed) in self._files.items():
+            if path.stem == session and parsed.title:
+                return parsed.title
+        return None
+
+    def latest_sessions(self) -> dict[tuple[str, str], LatestSession]:
+        """By (agent, project), the session whose file was written last. From
+        the files already parsed, so call after ``records``."""
+        latest: dict[tuple[str, str], LatestSession] = {}
+        for (mtime_ns, _), parsed in self._files.values():
+            if not parsed.records:
+                continue
+            rec = parsed.records[-1]
+            written_at = mtime_ns // 1_000_000_000
+            current = latest.get((rec.agent, rec.project))
+            if current is None or written_at > current.written_at:
+                latest[(rec.agent, rec.project)] = LatestSession(rec.session, written_at)
+        return latest
+
     def latest_codex_rate_limits(self) -> Optional[tuple[str, dict[str, Any]]]:
         found = [p.rate_limits for p in self._parsed() if p.rate_limits]
         return max(found, key=lambda item: _epoch(item[0]) or 0) if found else None
 
 
-def rollup(records: list[Rec]) -> dict[str, Any]:
-    """Daily rows by (date, agent, model, project), in the local timezone."""
+def _hour_start(ts: float) -> int:
+    return int(datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp())
+
+
+def rollup(records: list[Rec], now: Optional[float] = None) -> dict[str, Any]:
+    """Daily rows by (date, agent, model, project) in the local timezone, and
+    hourly rows by (hour, agent) for the last day."""
+    since = (datetime.now().timestamp() if now is None else now) - HOURLY_SECONDS
     rows: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    hours: dict[tuple[int, str], dict[str, Any]] = {}
     session_ids: dict[tuple[str, str], int] = {}
     for rec in records:
         date = datetime.fromtimestamp(rec.ts).strftime("%Y-%m-%d")
@@ -322,21 +373,37 @@ def rollup(records: list[Rec]) -> dict[str, Any]:
         if row is None:
             row = rows[key] = {
                 "date": date, "agent": rec.agent, "model": rec.model, "project": rec.project,
-                "fresh": 0, "cache_read": 0, "cache_write": 0, "output": 0, "requests": 0, "sessions": set(),
+                "fresh": 0, "cache_read": 0, "cache_write": 0, "output": 0, "requests": 0, "sessions": set(), "cost": None,
             }
-        row["fresh"] += rec.fresh
-        row["cache_read"] += rec.cache_read
-        row["cache_write"] += rec.cache_write
-        row["output"] += rec.output
-        row["requests"] += rec.requests
+        cost = rec.cost
+        if cost is not None:
+            row["cost"] = (row["cost"] or 0) + cost
         # Sessions span days and models, so the client needs ids to count
         # distinct ones in a slice. An index keeps the payload small.
-        row["sessions"].add(session_ids.setdefault((rec.agent, rec.session), len(session_ids)))
+        session = session_ids.setdefault((rec.agent, rec.session), len(session_ids))
+        slices = [row]
+        if rec.ts >= since:
+            hour = _hour_start(rec.ts)
+            slices.append(hours.setdefault((hour, rec.agent), {
+                "hour": hour, "agent": rec.agent, "fresh": 0, "cache_read": 0, "cache_write": 0, "output": 0,
+                "requests": 0, "sessions": set(),
+            }))
+        for target in slices:
+            target["fresh"] += rec.fresh
+            target["cache_read"] += rec.cache_read
+            target["cache_write"] += rec.cache_write
+            target["output"] += rec.output
+            target["requests"] += rec.requests
+            target["sessions"].add(session)
     result = sorted(rows.values(), key=lambda r: (r["date"], r["agent"], r["model"], r["project"]))
     for row in result:
         row["sessions"] = sorted(row["sessions"])
+    hourly = sorted(hours.values(), key=lambda r: (r["hour"], r["agent"]))
+    for row in hourly:
+        row["sessions"] = sorted(row["sessions"])
     return {
         "rows": result,
+        "hours": hourly,
         "first_date": result[0]["date"] if result else None,
         "last_date": result[-1]["date"] if result else None,
     }

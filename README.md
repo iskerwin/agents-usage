@@ -2,7 +2,7 @@
 
 在终端里集中查看 AI coding agent（Claude Code、Codex、Grok）的配额和 Token 用量，黑客风格，Dracula 配色。
 
-配额部分的思路和新鲜度规则参考了 [aiusage](https://github.com/sergestack/aiusage)（MIT），菜单栏的接口和行为参考了 [ai-usage-menubar](https://github.com/burakgon/ai-usage-menubar)（MIT），未复制其代码。只依赖 Python 标准库。
+配额部分的思路和新鲜度规则参考了 [aiusage](https://github.com/sergestack/aiusage)（MIT），菜单栏的接口和行为参考了 [ai-usage-menubar](https://github.com/burakgon/ai-usage-menubar)（MIT），未复制其代码。只依赖 Python 标准库。Codex 和 Claude 的图标路径来自 [Simple Icons](https://simpleicons.org)（CC0），各图标和商标归其所有者，这里只用来标识对应的服务。
 
 这是非官方工具，与 Anthropic、OpenAI 和 xAI 无关。Claude 实时配额和 Grok 配额用的是未公开接口，并会读取本机的登录 token，可能随时失效；使用前请自行确认是否符合各服务的条款。
 
@@ -24,7 +24,11 @@ uv run --group dev pytest
 
 ## macOS 菜单栏
 
-菜单栏显示最紧张窗口的剩余百分比，点开是配额、按月的用量热力图和可展开的历史总量。毛玻璃和外观默认跟随系统，可以在面板底部手动选择亮色或暗色，热力图固定用 Dracula 紫。需要 macOS 14 及以上，只装 Command Line Tools 即可构建。
+菜单栏是每个 agent 的图标加一根竖向电量条，长度是最紧张窗口的剩余额度，额度偏低时变色，悬停可看数字。点开是一张额度表：每个窗口一条长条，附剩余百分比和重置时间，长条上的刻度是匀速用量此刻应剩的位置，长条短过刻度说明用得比匀速快。下面依次是 API 折算费用、用量趋势（24h / 7d / 30d）和运行中的任务，点任务跳到它所在的终端。点 agent 进入详情页：全部额度窗口、账号、费用、请求数、Token、模型和项目排行，以及它自己的趋势和任务。面板大小固定，内容多时在内部滚动。齿轮里可以选外观和语言（跟随系统、中文或 English）、填月预算。需要 macOS 14 及以上，只装 Command Line Tools 即可构建。
+
+**费用是估算，不是账单。** 这里按[公开 API 价](agents_usage/pricing.py)把日志里的 Token 折算成美元，订阅用户并不按这个价格付费。没有公开价的模型（如 `grok-4.7-build`）不计入，悬停费用可以看到。长上下文和快速模式的加价不计入，所以会略低于实际 API 费用。
+
+运行任务来自终端里的 agent 进程：Claude Code 用它自己记录的状态，Codex 和 Grok 在会话文件 2 分钟内有写入时算运行中。任务标题是 agent 生成的会话短标题，只显示在本机。
 
 ```bash
 uv tool install --force --reinstall .  # app 调用已安装的 agents-usage，Python 代码改动后要重新运行
@@ -32,7 +36,7 @@ macos/build.sh                         # 构建到 ~/Applications，也可以传
 macos/test.sh
 ```
 
-目前不提供预编译版本，需要自行构建。app 每 5 分钟刷新一次，不开启 `--claude-live`。Claude 配额依赖上面的 statusLine 快照，超过 10 分钟未更新会标记为“已过期”。需要开机启动时，在“系统设置 → 通用 → 登录项”中添加。
+目前不提供预编译版本，需要自行构建。app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，不开启 `--claude-live`。Claude 配额依赖上面的 statusLine 快照，超过 10 分钟未更新会标记为“已过期”。需要开机启动时，在“系统设置 → 通用 → 登录项”中添加。
 
 ## 数据来源
 
@@ -41,7 +45,7 @@ macos/test.sh
 | Token 趋势 | `~/.claude/projects/**/*.jsonl` | `~/.codex*/sessions`、`archived_sessions` | `~/.grok/sessions/*/*/usage.json` |
 | 配额窗口 | statusLine 快照，或 `--claude-live` | `codex app-server`，失败时用会话日志中最新的记录 | Grok CLI 用量接口 |
 
-- 只读取时间、模型、工作目录和 Token 数，不保留消息内容。
+- 只读取时间、模型、工作目录、Token 数和 agent 生成的会话标题，不读取消息内容。
 - 历史范围取决于 agent 保留日志的时长。Claude Code 默认会清理旧日志。
 - 同一响应的重复日志行、恢复或分叉会话的重放记录都会去重。
 - 不含缓存读取时，三者口径一致：Codex 和 Grok 的输入 Token 已包含缓存，这里先拆开再统计。

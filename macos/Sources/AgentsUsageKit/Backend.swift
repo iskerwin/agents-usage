@@ -6,7 +6,7 @@ public enum BackendError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notInstalled: return "未找到 agents-usage，请先运行 uv tool install ."
+        case .notInstalled: return tr("未找到 agents-usage，请先运行 uv tool install .", "agents-usage not found. Run uv tool install . first")
         }
     }
 }
