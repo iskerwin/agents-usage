@@ -199,6 +199,17 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(details.projects == [AgentDetails.Entry(name: "~/a", tokens: 140)])
 }
 
+@Test func theMarkSuitsBothPlacesItAppears() throws {
+    let bar = AppMark.menuBarImage()
+    #expect(bar.isTemplate)
+    #expect(bar.size == NSSize(width: 18, height: 18))
+    let png = try #require(AppMark.appIconPNG(pixels: 64))
+    let icon = try #require(NSBitmapImageRep(data: png))
+    #expect(icon.pixelsWide == 64 && icon.pixelsHigh == 64)
+    #expect(icon.colorAt(x: 0, y: 0)?.alphaComponent == 0)  // the margin macOS icons leave
+    #expect(icon.colorAt(x: 32, y: 8)?.alphaComponent == 1)
+}
+
 @Test func rankingUsesTheNameTheBackendSends() throws {
     let json = """
     {"date":"2026-11-05","agent":"claude","model":"claude-opus-5-5","model_name":"Claude Opus 5.5","project":"p",

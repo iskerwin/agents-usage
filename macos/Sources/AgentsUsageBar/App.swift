@@ -61,7 +61,7 @@ private final class AppController: NSObject, NSApplicationDelegate {
         selectionSubscription = selection.$shown.sink { [weak self] in self?.showDetail($0) }
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent", accessibilityDescription: "Agents Usage")
+            button.image = AppMark.menuBarImage()
             button.target = self
             button.action = #selector(toggle)
         }

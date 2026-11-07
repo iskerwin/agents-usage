@@ -5,11 +5,16 @@ set -eu
 dest="${1:-$HOME/Applications}"
 cd "$(dirname "$0")"
 swift build -c release
-bin="$(swift build -c release --show-bin-path)/AgentsUsageBar"
+bins="$(swift build -c release --show-bin-path)"
+bin="$bins/AgentsUsageBar"
 
 app="$dest/AgentsUsageBar.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+iconset="$(mktemp -d)/AppIcon.iconset"
+"$bins/make-icon" "$iconset"
+iconutil -c icns -o "$app/Contents/Resources/AppIcon.icns" "$iconset"
+rm -rf "$(dirname "$iconset")"
 cp "$bin" "$app/Contents/MacOS/AgentsUsageBar"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -17,6 +22,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>AgentsUsageBar</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>local.agents-usage.bar</string>
     <key>CFBundleName</key><string>AgentsUsageBar</string>
     <key>CFBundlePackageType</key><string>APPL</string>

@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(name: "AgentsUsageKit"),
         .executableTarget(name: "AgentsUsageBar", dependencies: ["AgentsUsageKit"]),
+        .executableTarget(name: "make-icon", dependencies: ["AgentsUsageKit"]),
         .testTarget(name: "AgentsUsageKitTests", dependencies: ["AgentsUsageKit"]),
     ]
 )
