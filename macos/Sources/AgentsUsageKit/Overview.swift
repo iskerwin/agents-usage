@@ -80,7 +80,7 @@ public struct CostSummary {
         let monthRows = rows.filter { $0.date.hasPrefix(monthPrefix) }
         today = Self.sum(rows.filter { $0.date == date })
         month = Self.sum(monthRows)
-        unpricedModels = Set(monthRows.filter { $0.cost == nil }.map(\.model)).sorted()
+        unpricedModels = Set(monthRows.filter { $0.cost == nil }.map(\.displayModel)).sorted()
     }
 
     static func sum(_ rows: [Snapshot.Row]) -> Double? {
@@ -115,7 +115,7 @@ public struct AgentDetails {
         self.today = TokenTotals(rows: own.filter { $0.date == today })
         requests = month.reduce(0) { $0 + $1.requests }
         sessions = Set(month.flatMap(\.sessions)).count
-        models = Self.ranking(month, key: \.model)
+        models = Self.ranking(month, key: \.displayModel)
         projects = Self.ranking(month, key: \.project)
     }
 

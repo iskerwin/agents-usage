@@ -171,3 +171,17 @@ def test_grok_skips_a_broken_or_partial_file(monkeypatch, tmp_path):
     assert Scanner().records() == []
     (folder / "usage.json").write_text('{"turns": [')
     assert Scanner().records() == []
+
+
+def test_model_names_follow_what_the_vendors_publish():
+    from agents_usage.logs import model_name
+    assert model_name("claude-opus-5-5") == "Claude Opus 5.5"
+    assert model_name("claude-haiku-5-5") == "Claude Haiku 5.5"
+    assert model_name("claude-opus-5") == "Claude Opus 5"
+    assert model_name("claude-haiku-4-5-20251001") == "Claude Haiku 4.5"
+    assert model_name("gpt-6.1-sol") == "GPT-6.1 Sol"
+    assert model_name("gpt-6-astra") == "GPT-6 Astra"
+    assert model_name("grok-4.7") == "Grok 4.7"
+    # No published name: not made up, not guessed.
+    for unknown in ("grok-4.7-build", "codex-auto-review", "(未知)"):
+        assert model_name(unknown) == unknown

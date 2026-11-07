@@ -28,7 +28,7 @@ macos/build.sh                         # 构建到 ~/Applications，也可以传
 macos/test.sh
 ```
 
-app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，不开启 `--claude-live`。
+app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，电脑唤醒后也会刷新，不开启 `--claude-live`。启动时先显示上次的数据（按同样的规则标记过期），配额在后台刷新后再更新。上次的数据保存在 `~/.cache/agents-usage/snapshot.json`（权限 0600），包含账号邮箱和项目路径。
 
 **费用是估算，不是账单。** 这里按[公开 API 价](agents_usage/pricing.py)把日志里的 Token 折算成美元，订阅用户并不按这个价格付费。没有公开价的模型（如 `grok-4.7-build`）不计入，悬停费用可以看到。长上下文和快速模式的加价不计入，所以会略低于实际 API 费用。
 

@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +31,22 @@ from agents_usage.pricing import cost_usd
 
 CODEX_LIMIT_ID = "codex"
 HOURLY_SECONDS = 25 * 3600  # 24 full hours, plus the one in progress
+CLAUDE_MODEL = re.compile(r"claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?")
+GPT_MODEL = re.compile(r"gpt-(\d+(?:\.\d+)?)-(astra|sol|terra|luna)")
+GROK_MODEL = re.compile(r"grok-(\d+(?:\.\d+)?)")
+
+
+def model_name(model: str) -> str:
+    """The name the vendor publishes for a model id. An id with no published
+    name, such as ``grok-4.7-build``, stays as it is rather than getting a made-up one."""
+    if match := CLAUDE_MODEL.fullmatch(model):
+        line, major, minor = match.groups()
+        return f"Claude {line.title()} {major}" + (f".{minor}" if minor else "")
+    if match := GPT_MODEL.fullmatch(model):
+        return f"GPT-{match[1]} {match[2].title()}"
+    if match := GROK_MODEL.fullmatch(model):
+        return f"Grok {match[1]}"
+    return model
 
 
 @dataclass
@@ -290,12 +308,18 @@ def grok_files() -> list[Path]:
 
 
 class Scanner:
-    """Parses log files, re-reading only those whose size or mtime changed."""
+    """Parses log files, re-reading only those whose size or mtime changed.
+    Safe to share between threads: a quota refresh reads it in the background."""
 
     def __init__(self) -> None:
         self._files: dict[Path, tuple[tuple[int, int], ParsedFile]] = {}
+        self._lock = threading.RLock()
 
     def _parsed(self) -> list[ParsedFile]:
+        with self._lock:
+            return self._parse()
+
+    def _parse(self) -> list[ParsedFile]:
         wanted = ([(p, parse_claude) for p in claude_files()] + [(p, parse_codex) for p in codex_files()]
                   + [(p, parse_grok) for p in grok_files()])
         seen = set()
@@ -327,16 +351,19 @@ class Scanner:
 
     def claude_title(self, session: str) -> Optional[str]:
         """From the files already parsed, so call after ``records``."""
-        for path, (_, parsed) in self._files.items():
-            if path.stem == session and parsed.title:
-                return parsed.title
+        with self._lock:
+            for path, (_, parsed) in self._files.items():
+                if path.stem == session and parsed.title:
+                    return parsed.title
         return None
 
     def latest_sessions(self) -> dict[tuple[str, str], LatestSession]:
         """By (agent, project), the session whose file was written last. From
         the files already parsed, so call after ``records``."""
         latest: dict[tuple[str, str], LatestSession] = {}
-        for (mtime_ns, _), parsed in self._files.values():
+        with self._lock:
+            files = list(self._files.values())
+        for (mtime_ns, _), parsed in files:
             if not parsed.records:
                 continue
             rec = parsed.records[-1]
@@ -368,7 +395,8 @@ def rollup(records: list[Rec], now: Optional[float] = None) -> dict[str, Any]:
         row = rows.get(key)
         if row is None:
             row = rows[key] = {
-                "date": date, "agent": rec.agent, "model": rec.model, "project": rec.project,
+                "date": date, "agent": rec.agent, "model": rec.model, "model_name": model_name(rec.model),
+                "project": rec.project,
                 "fresh": 0, "cache_read": 0, "cache_write": 0, "output": 0, "requests": 0, "sessions": set(), "cost": None,
             }
         cost = rec.cost

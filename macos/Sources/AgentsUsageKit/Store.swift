@@ -18,6 +18,7 @@ public final class Store: ObservableObject {
     private var watchdog: Task<Void, Never>?
     private var openPanelRefresh: Task<Void, Never>?
     private var inFlight = false
+    private var wakeObserver: NSObjectProtocol?
 
     public init() {
         theme = Theme(stored: UserDefaults.standard.string(forKey: Theme.defaultsKey))
@@ -31,6 +32,12 @@ public final class Store: ObservableObject {
             onExit: { [weak self] in Task { @MainActor in self?.exited() } }
         )
         refresh(force: false)
+        // The timers below do not run while the Mac sleeps.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh(force: false) }
+        }
         Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.refreshSeconds * 1_000_000_000)
@@ -90,11 +97,9 @@ public final class Store: ObservableObject {
         }
         inFlight = true
         busy = force
-        do {
-            try backend.send(force ? "force" : "get")
-        } catch {
-            finish(error: error.localizedDescription)
-            return
+        backend.send(force ? "force" : "get") { [weak self] error in
+            let message = error.localizedDescription
+            Task { @MainActor in self?.finish(error: message) }
         }
         watchdog = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.requestTimeoutSeconds * 1_000_000_000)
@@ -105,7 +110,11 @@ public final class Store: ObservableObject {
     private func received(_ data: Data) {
         if let snapshot = try? Snapshot.decode(data) {
             self.snapshot = snapshot
-            finish(error: nil)
+            if snapshot.refreshing == true {
+                error = nil  // the line that ends the refresh is still to come
+            } else {
+                finish(error: nil)
+            }
         } else {
             let failure = try? JSONDecoder().decode([String: String].self, from: data)
             finish(error: failure?["error"] ?? tr("无法解析后端返回的数据", "Could not parse the backend's response"))

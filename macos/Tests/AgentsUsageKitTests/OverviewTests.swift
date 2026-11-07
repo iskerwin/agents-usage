@@ -199,6 +199,19 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(details.projects == [AgentDetails.Entry(name: "~/a", tokens: 140)])
 }
 
+@Test func rankingUsesTheNameTheBackendSends() throws {
+    let json = """
+    {"date":"2026-11-05","agent":"claude","model":"claude-opus-5-5","model_name":"Claude Opus 5.5","project":"p",
+     "fresh":5,"cache_read":0,"cache_write":0,"output":0,"requests":1,"sessions":[]}
+    """
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let named = try decoder.decode(Snapshot.Row.self, from: Data(json.utf8))
+    let details = AgentDetails(rows: [named], kind: .claude, today: "2026-11-05")
+    #expect(details.models == [AgentDetails.Entry(name: "Claude Opus 5.5", tokens: 5)])
+    #expect(row("2026-11-05", "claude", 1, model: "raw-id").displayModel == "raw-id")
+}
+
 @Test func rankingFoldsTheTailWithoutLosingTokens() {
     let rows = (1...7).map { row("2026-10-01", "claude", $0 * 10, model: "m\($0)") }
     let ranking = AgentDetails.ranking(rows, key: \.model)

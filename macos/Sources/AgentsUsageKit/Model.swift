@@ -6,6 +6,7 @@ public struct Snapshot: Decodable {
     public let accounts: [Account]
     public let usage: Usage
     public let tasks: [AgentTask]?
+    public let refreshing: Bool?  // the backend sends another line when its quota refresh ends
 
     public struct Account: Decodable, Identifiable {
         public let agent: String
@@ -63,6 +64,7 @@ public struct Snapshot: Decodable {
         public let date: String
         public let agent: String
         public let model: String
+        public let modelName: String?
         public let project: String
         public let fresh: Int
         public let cacheRead: Int
@@ -71,6 +73,8 @@ public struct Snapshot: Decodable {
         public let requests: Int
         public let sessions: [Int]
         public let cost: Double?  // nil when the model has no public price
+
+        public var displayModel: String { modelName ?? model }
 
         /// The CLI's default "billable" metric: everything but cache reads.
         public var billable: Int { fresh + cacheWrite + output }

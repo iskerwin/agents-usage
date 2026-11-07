@@ -32,6 +32,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -297,6 +298,16 @@ def parse_claude_live(payload: Any) -> list[Window]:
     return windows
 
 
+def write_private(path: Path, text: str) -> None:
+    """Atomically, readable only by the user."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
 def capture_claude_statusline(raw: str) -> bool:
     """Store the rate limits of a statusLine payload, and nothing else from it.
     Invalid or partial input never replaces a valid snapshot."""
@@ -307,13 +318,7 @@ def capture_claude_statusline(raw: str) -> bool:
     limits = payload.get("rate_limits") if isinstance(payload, dict) else None
     if not parse_claude_statusline(limits):
         return False
-    path = statusline_path()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_suffix(f".{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        json.dump({"captured_at": int(time.time()), "rate_limits": limits}, fh)
-    os.replace(tmp, path)
+    write_private(statusline_path(), json.dumps({"captured_at": int(time.time()), "rate_limits": limits}))
     return True
 
 
@@ -395,15 +400,16 @@ class ClaudeQuota:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    def query(self) -> list[Account]:
+    def query(self, refresh: bool = True) -> list[Account]:
+        """Without ``refresh`` this only reads the snapshot file, so it never waits."""
         exe = shutil.which("claude")
         base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
         if not exe and not base.is_dir():
             return []
         now = int(time.time())
-        email, plan = self._whoami(exe)
+        email, plan = self._whoami(exe) if refresh else self._identity[1:]
         account = Account("claude", "Claude Code", email=email, plan=plan)
-        if self.live:
+        if self.live and refresh:
             self._refresh_live()
         candidates = []
         if self._last_live:
@@ -568,6 +574,27 @@ def most_urgent(accounts: list[Account]) -> Optional[dict[str, Any]]:
     return {"agent": best[2].agent, "name": best[2].name, **best[3].to_dict()}
 
 
+def summarize(accounts: list[Account]) -> dict[str, Any]:
+    return {
+        "accounts": [a.to_dict() for a in accounts],
+        "most_urgent": most_urgent(accounts),
+        "unmeasured": [a.name for a in accounts if not a.windows or a.stale],
+    }
+
+
+def age_account(account: Account, now: int) -> Account:
+    """Apply the freshness rules again to an account read a while ago."""
+    if account.captured_at:
+        account.stale = now - account.captured_at > STALE_AFTER_SECONDS
+    account.windows = _live_windows(account.windows, now)
+    return account
+
+
+def account_from_dict(data: dict[str, Any]) -> Account:
+    windows = [Window(w["label"], w["used_percent"], w.get("resets_at")) for w in data["windows"]]
+    return Account(**{**data, "windows": windows})
+
+
 class QuotaService:
     def __init__(self, scanner: Scanner, claude_live: bool, ttl: int = 60) -> None:
         self.scanner = scanner
@@ -575,20 +602,35 @@ class QuotaService:
         self.grok = GrokQuota()
         self.ttl = ttl
         self._lock = threading.Lock()
-        self._cached: Optional[tuple[float, dict[str, Any]]] = None
+        self._accounts: Optional[list[Account]] = None
+        self._refreshed_at = 0.0
+
+    def due(self) -> bool:
+        return self._accounts is None or time.time() - self._refreshed_at >= self.ttl
+
+    def _query(self) -> list[Account]:
+        """Together rather than in turn, so the wait is the slowest source and not their sum."""
+        with ThreadPoolExecutor(3) as pool:
+            sources = [pool.submit(self.claude.query), pool.submit(query_codex, self.scanner),
+                       pool.submit(self.grok.query)]
+            return [account for source in sources for account in source.result()]
 
     def get(self, force: bool = False) -> dict[str, Any]:
         with self._lock:
-            if not force and self._cached and time.time() - self._cached[0] < self.ttl:
-                return self._cached[1]
-            accounts = self.claude.query() + query_codex(self.scanner) + self.grok.query()
-            result = {
-                "accounts": [a.to_dict() for a in accounts],
-                "most_urgent": most_urgent(accounts),
-                "unmeasured": [a.name for a in accounts if not a.windows or a.stale],
-            }
-            self._cached = (time.time(), result)
-            return result
+            if force or self.due():
+                self._accounts = self._query()
+                self._refreshed_at = time.time()
+            return summarize(self._accounts)
+
+    def current(self) -> Optional[dict[str, Any]]:
+        """What is known right now, without waiting for a refresh in progress.
+        None before the first one. Claude's snapshot is only a file, so it is always read."""
+        known = self._accounts
+        if known is None:
+            return None
+        now = int(time.time())
+        others = [age_account(a, now) for a in known if a.agent != "claude"]
+        return summarize(self.claude.query(refresh=False) + others)
 
 
 def timezone_name() -> str:

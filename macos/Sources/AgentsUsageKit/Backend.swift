@@ -13,7 +13,11 @@ public enum BackendError: LocalizedError {
 
 /// The long-running `agents-usage serve` process. Its stdin closing is what
 /// stops it, so it cannot outlive the app.
-public final class Backend {
+///
+/// Everything runs on a queue of its own: finding the executable starts a login
+/// shell, which can take seconds and must not hold up the app.
+public final class Backend: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "agents-usage.backend")
     private var process: Process?
     private var input: FileHandle?
     private let onLine: @Sendable (Data) -> Void
@@ -26,13 +30,19 @@ public final class Backend {
         signal(SIGPIPE, SIG_IGN)
     }
 
-    public func send(_ command: String) throws {
-        if process?.isRunning != true { try start() }
-        try input?.write(contentsOf: Data((command + "\n").utf8))
+    public func send(_ command: String, onFailure: @escaping @Sendable (Error) -> Void) {
+        queue.async { [self] in
+            do {
+                if process?.isRunning != true { try start() }
+                try input?.write(contentsOf: Data((command + "\n").utf8))
+            } catch {
+                onFailure(error)
+            }
+        }
     }
 
     public func stop() {
-        process?.terminate()
+        queue.async { [self] in process?.terminate() }
     }
 
     private func start() throws {

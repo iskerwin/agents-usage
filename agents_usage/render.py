@@ -242,7 +242,7 @@ def _usage(snap: dict[str, Any], opts: ViewOptions) -> list[Line]:
     lines: list[Line] = [[Span(label, None, True), Span(f"  {compact(total)}", None, True)]]
     lines.extend(_daily(days, rows, opts))
     lines.append([])
-    lines.extend(_ranking(rows, lambda r: r["model"], opts))
+    lines.extend(_ranking(rows, lambda r: r.get("model_name", r["model"]), opts))
     if opts.projects:
         lines.append([])
         lines.extend(_ranking(rows, lambda r: short_path(r["project"]), opts, limit=8))

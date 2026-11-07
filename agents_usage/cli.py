@@ -6,12 +6,15 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from agents_usage import __version__
 from agents_usage.logs import Scanner, rollup
-from agents_usage.quota import QuotaService, capture_claude_statusline, timezone_name
+from agents_usage.quota import (QuotaService, account_from_dict, age_account, cache_dir, capture_claude_statusline,
+                                summarize, timezone_name, write_private)
 from agents_usage.render import MAX_WIDTH, METRICS, ViewOptions, build_view, to_ansi
 from agents_usage.tasks import list_tasks
 from agents_usage.tui import terminal_size, watch
@@ -24,9 +27,8 @@ class Panel:
         self.scanner = Scanner()
         self.quota = QuotaService(self.scanner, claude_live)
 
-    def snapshot(self, force: bool = False) -> dict[str, Any]:
+    def _build(self, quota: dict[str, Any], refreshing: bool = False) -> dict[str, Any]:
         usage = rollup(self.scanner.records())
-        quota = self.quota.get(force)
         return {
             "version": __version__,
             "generated_at": int(time.time()),
@@ -34,7 +36,34 @@ class Panel:
             **quota,
             "usage": usage,
             "tasks": list_tasks(self.scanner),
+            "refreshing": refreshing,
         }
+
+    def snapshot(self, force: bool = False) -> dict[str, Any]:
+        return self._build(self.quota.get(force))
+
+    def current(self, refreshing: bool) -> Optional[dict[str, Any]]:
+        """A snapshot that does not wait for quotas. None until some are known."""
+        quota = self.quota.current()
+        return None if quota is None else self._build(quota, refreshing)
+
+    def save(self, snapshot: dict[str, Any]) -> None:
+        write_private(saved_snapshot_path(), json.dumps(snapshot))
+
+    def restored(self) -> Optional[dict[str, Any]]:
+        """The last run's snapshot, to show while this run catches up, under the
+        same freshness rules. Tasks are left out: their processes may be gone."""
+        now = int(time.time())
+        try:
+            saved = json.loads(saved_snapshot_path().read_text())
+            accounts = [age_account(account_from_dict(a), now) for a in saved["accounts"]]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        return {**saved, **summarize(accounts), "generated_at": now, "tasks": [], "refreshing": True}
+
+
+def saved_snapshot_path() -> Path:
+    return cache_dir() / "snapshot.json"
 
 
 def wants_color(no_color: bool) -> bool:
@@ -56,7 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agents-usage", description="AI coding agent 用量面板")
     parser.add_argument("command", nargs="?", choices=["capture-claude", "serve"],
                         help="capture-claude：从 stdin 读取 statusLine JSON 并保存配额快照；"
-                             "serve：常驻进程，stdin 每收到一行就输出一行 JSON 快照（line 为 force 时强制刷新配额）")
+                             "serve：常驻进程，stdin 每收到一行就输出 JSON 快照（line 为 force 时强制刷新配额；"
+                             "refreshing 为 true 表示配额刷新完后还会再输出一行）")
     parser.add_argument("--watch", type=positive_int, nargs="?", const=60, metavar="秒",
                         help="全屏持续刷新（默认每 60 秒），按 q 退出")
     parser.add_argument("--days", type=positive_int, default=7, help="统计最近几天（默认 7）")
@@ -75,17 +105,61 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def serve(panel: Panel) -> int:
-    """One JSON line per request, until stdin closes. Staying alive keeps the
-    log cache and the Claude rate limit, which only exist in memory."""
-    for line in sys.stdin:
+    """JSON lines until stdin closes. Staying alive keeps the log cache and the
+    Claude rate limit, which only exist in memory.
+
+    A request is answered at once from what is known, because quotas take
+    seconds. They refresh on a thread, and ``refreshing`` in a line says another
+    line follows when that is done. The first request of a run has only the last
+    run's snapshot to answer with, if any. The lock keeps a line saying
+    ``refreshing`` from being printed after the one that ends the refresh."""
+    lock = threading.Lock()
+    refreshing = False
+    restored_sent = False
+
+    def send(build: Callable[[], Optional[dict[str, Any]]]) -> Optional[dict[str, Any]]:
         try:
-            payload = panel.snapshot(force=line.strip() == "force")
+            payload = build()
         except Exception as exc:
             payload = {"error": str(exc) or type(exc).__name__}
+        if payload is not None:
+            try:
+                print(json.dumps(payload), flush=True)
+            except (BrokenPipeError, ValueError):  # the reader is gone; stdin closing ends the loop
+                pass
+        return payload
+
+    def refresh(force: bool) -> None:
+        nonlocal refreshing
+        # Parsing the logs alongside, so the first answer waits for neither in turn.
+        threading.Thread(target=panel.scanner.records, daemon=True).start()
+        failure: Optional[Exception] = None
         try:
-            print(json.dumps(payload), flush=True)
-        except BrokenPipeError:
-            break
+            panel.quota.get(force)
+        except Exception as exc:
+            failure = exc
+        with lock:
+            refreshing = False
+            if failure is not None:
+                send(lambda: {"error": str(failure) or type(failure).__name__})
+                return
+            payload = send(lambda: panel.current(False))
+        if payload is not None and "error" not in payload:
+            try:
+                panel.save(payload)
+            except OSError:  # only a head start for the next run
+                pass
+
+    for line in sys.stdin:
+        force = line.strip() == "force"
+        with lock:
+            if (force or panel.quota.due()) and not refreshing:
+                refreshing = True
+                threading.Thread(target=refresh, args=(force,), daemon=True).start()
+            payload = send(lambda: panel.current(refreshing))
+            if payload is None and not restored_sent:
+                restored_sent = True
+                send(panel.restored)
     return 0
 
 
