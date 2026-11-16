@@ -4,6 +4,7 @@ import SwiftUI
 // line up.
 private enum Column {
     static let label: CGFloat = 22
+    static let windowLabel: CGFloat = 40  // room for a model name such as Sonnet
     static let percent: CGFloat = 58
     static let reset: CGFloat = 48
     static let rowInset: CGFloat = 8
@@ -221,7 +222,7 @@ struct QuotaRow: View {
     var stale = false
 
     var body: some View {
-        let label = shortWindowLabel(window.label)
+        let label = windowRowLabel(window.label)
         let pace = window.evenPaceLeft(now: now)
         let percent = levelMark(window.level) + percentText(window.leftPercent)
         let reset = window.resetsAt.map { durationText(seconds: $0 - now) } ?? "—"
@@ -231,8 +232,8 @@ struct QuotaRow: View {
                 .foregroundStyle(Palette.muted)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
-                .frame(width: Column.label, alignment: .leading)
-                .help(label)
+                .frame(width: Column.windowLabel, alignment: .leading)
+                .help(shortWindowLabel(window.label))
             QuotaBar(fraction: window.leftPercent / 100, color: window.level == "ok" ? Palette.bar : Palette.level(window.level), pace: pace.map { $0 / 100 })
             Text(percent)
                 .font(.system(size: 13, weight: .semibold).monospacedDigit())

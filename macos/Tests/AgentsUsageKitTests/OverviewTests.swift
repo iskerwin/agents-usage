@@ -172,6 +172,8 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(moneyText(1234.4) == "$1,234")
     #expect(shortWindowLabel("5 小时") == "5h")
     #expect(shortWindowLabel("每周 (Opus)") == "7d (Opus)")
+    #expect(windowRowLabel("每周 (Fable)") == "Fable")
+    #expect(windowRowLabel("5 小时") == "5h")
     #expect(parseBudget(" $100 ") == 100)
     #expect(parseBudget("0") == nil)
     #expect(parseBudget("abc") == nil)
@@ -242,6 +244,12 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(!Language.english.isChinese(preferred: ["zh-Hans"]))
 }
 
+@Test func modelWindowKeepsItsPaceNotch() throws {
+    let now = 1_793_900_000
+    let fable = try window("每周 (Fable)", left: 82, resetsAt: now + 3 * 86400)
+    #expect(fable.evenPaceLeft(now: now) == Double(3) / 7 * 100)
+}
+
 private func window(_ label: String, left: Double, resetsAt: Int? = nil) throws -> Snapshot.QuotaWindow {
     let reset = resetsAt.map(String.init) ?? "null"
     let json = """
@@ -261,10 +269,12 @@ private func window(_ label: String, left: Double, resetsAt: Int? = nil) throws 
     #expect(try window("5 小时", left: 50, resetsAt: now - 60).evenPaceLeft(now: now) == 0)
 }
 
-@Test func glanceFitsTwoWindowsAndKeepsTheTightest() throws {
-    let accounts = "[\(account("claude", "c", left: [80, 70, 10]))]"
+@Test func glanceFitsThreeWindowsAndKeepsTheTightest() throws {
+    let three = "[\(account("claude", "c", left: [80, 70, 60]))]"
+    #expect(try snapshot(accounts: three).summaries[0].glanceWindows.map(\.leftPercent) == [80, 70, 60])
+    let accounts = "[\(account("claude", "c", left: [80, 70, 60, 10]))]"
     let glance = try snapshot(accounts: accounts).summaries[0].glanceWindows
-    #expect(glance.map(\.leftPercent) == [80, 10])
+    #expect(glance.map(\.leftPercent) == [80, 70, 10])
     let across = "[\(account("codex", "a", left: [80])),\(account("codex", "b", left: [60]))]"
     #expect(try snapshot(accounts: across).summaries[0].glanceWindows.map(\.leftPercent) == [60])
     let stale = "[\(account("codex", "a", stale: true, left: [5])),\(account("codex", "b", left: [70]))]"

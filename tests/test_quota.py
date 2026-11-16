@@ -304,3 +304,36 @@ def test_live_failure_reports_status_without_token(monkeypatch):
     account = ClaudeQuota(live=True).query()[0]
     assert "sekret-token" not in (account.note or "")
     assert account.windows == []
+
+
+FABLE_LIMITS = [
+    {"kind": "session", "percent": 3, "resets_at": "2099-01-01T00:00:00+00:00", "scope": None},
+    {"kind": "weekly_all", "percent": 88, "resets_at": "2099-01-02T00:00:00+00:00", "scope": None},
+    {"kind": "weekly_scoped", "percent": 18, "resets_at": "2099-01-02T00:00:00+00:00",
+     "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+]
+
+
+def test_claude_live_limits_include_model_windows_only_when_present():
+    legacy = {"five_hour": {"utilization": 3}, "seven_day": {"utilization": 88}}
+    windows = parse_claude_live({**legacy, "limits": FABLE_LIMITS})
+    assert [(w.label, w.used_percent) for w in windows] == [("5 小时", 3), ("每周", 88), ("每周 (Fable)", 18)]
+    without = parse_claude_live({**legacy, "limits": FABLE_LIMITS[:2]})
+    assert [w.label for w in without] == ["5 小时", "每周"]
+    unnamed = {**FABLE_LIMITS[2], "scope": {"model": {"display_name": None}}}
+    assert [w.label for w in parse_claude_live({"limits": [unnamed, *FABLE_LIMITS[:1]]})] == ["5 小时"]
+
+
+def test_fresh_live_wins_over_a_newer_snapshot(monkeypatch):
+    monkeypatch.setattr(quota, "_claude_token", lambda: "tok")
+    monkeypatch.setattr(quota, "_fetch_claude_live", lambda token: {"limits": FABLE_LIMITS})
+    claude = ClaudeQuota(live=True)
+    claude.query()
+    captured, windows = claude._last_live
+    claude._last_live = (captured - 30, windows)
+    snapshot = {"rate_limits": {"five_hour": {"used_percentage": 4, "resets_at": FUTURE}}}
+    assert capture_claude_statusline(json.dumps(snapshot))
+    account = claude.query()[0]
+    assert account.source == "Claude OAuth 用量接口" and "每周 (Fable)" in [w.label for w in account.windows]
+    claude._last_live = (claude._last_live[0] - quota.STALE_AFTER_SECONDS - 1, claude._last_live[1])
+    assert claude.query()[0].source == "Claude statusLine 快照"

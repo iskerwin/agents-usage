@@ -51,7 +51,8 @@ public final class Backend: @unchecked Sendable {
         let process = Process()
         let stdin = Pipe(), stdout = Pipe()
         process.executableURL = URL(fileURLWithPath: exe)
-        process.arguments = ["serve"]
+        // Live Claude quota is the only source of the per-model windows, such as Fable's.
+        process.arguments = ["serve", "--claude-live"]
         // codex and claude are looked up on PATH by the backend too.
         process.environment = ProcessInfo.processInfo.environment.merging(["PATH": path]) { _, new in new }
         process.standardInput = stdin

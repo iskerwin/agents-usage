@@ -27,7 +27,7 @@ public struct AgentSummary: Identifiable {
 
     public var id: String { kind.id }
 
-    static let glanceLimit = 2
+    static let glanceLimit = 3
 
     init(kind: AgentKind, accounts: [Snapshot.Account]) {
         self.kind = kind
@@ -277,6 +277,15 @@ public func durationText(seconds: Int) -> String {
     if seconds >= 86400 { return "\(seconds / 86400)d \(seconds % 86400 / 3600)h" }
     if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
     return "\(max(seconds / 60, 1))m"
+}
+
+/// What a quota row shows in its narrow label column: `5h`, `7d`, and a
+/// per-model window by its model alone, `Fable` for `每周 (Fable)`.
+public func windowRowLabel(_ label: String) -> String {
+    guard let open = label.firstIndex(of: "("), let close = label.lastIndex(of: ")"), open < close else {
+        return shortWindowLabel(label)
+    }
+    return String(label[label.index(after: open)..<close])
 }
 
 /// `5 小时` as `5h`, `每周 (Opus)` as `7d (Opus)`.

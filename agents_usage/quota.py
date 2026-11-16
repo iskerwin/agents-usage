@@ -284,11 +284,38 @@ def parse_claude_statusline(rate_limits: Any) -> list[Window]:
     return windows
 
 
+def _claude_limit_label(limit: dict[str, Any]) -> Optional[str]:
+    kind = limit.get("kind")
+    if kind == "session":
+        return "5 小时"
+    if kind == "weekly_all":
+        return "每周"
+    if kind == "weekly_scoped":
+        scope = limit.get("scope")
+        model = scope.get("model") if isinstance(scope, dict) else None
+        name = model.get("display_name") if isinstance(model, dict) else None
+        return f"每周 ({name.strip()})" if isinstance(name, str) and name.strip() else None
+    return None
+
+
+def parse_claude_limits(limits: Any) -> list[Window]:
+    """The ``limits`` list, which also names per-model weekly allowances such as
+    Fable's. One that the plan does not have is simply absent from it."""
+    windows: list[Window] = []
+    for raw in limits if isinstance(limits, list) else []:
+        label = _claude_limit_label(raw) if isinstance(raw, dict) else None
+        used = _percent(raw.get("percent")) if label else None
+        if used is not None and all(w.label != label for w in windows):
+            windows.append(Window(label, used, _reset_epoch(raw.get("resets_at"))))
+    return windows
+
+
 def parse_claude_live(payload: Any) -> list[Window]:
     if not isinstance(payload, dict):
         raise ValueError("响应格式不符")
-    windows = []
-    for key, label in CLAUDE_WINDOWS:
+    # The list or the older per-window keys, never both: a label names one window.
+    windows = parse_claude_limits(payload.get("limits"))
+    for key, label in CLAUDE_WINDOWS if not windows else ():
         raw = payload.get(key)
         used = _percent(raw.get("utilization")) if isinstance(raw, dict) else None
         if used is not None:
@@ -420,7 +447,11 @@ class ClaudeQuota:
         if not candidates:
             account.note = self._last_problem or CLAUDE_SETUP_NOTE
             return [account]
-        captured, windows, source = max(candidates, key=lambda item: item[0])
+        # Live while it is fresh, since only it has the per-model windows: a
+        # snapshot a few seconds newer would otherwise make them come and go.
+        # One source per account, so every window shares its time.
+        live_fresh = self._last_live is not None and now - self._last_live[0] <= STALE_AFTER_SECONDS
+        captured, windows, source = candidates[0] if live_fresh else max(candidates, key=lambda item: item[0])
         account.source, account.captured_at = source, captured
         account.stale = now - captured > STALE_AFTER_SECONDS
         account.windows = _live_windows(windows, now)
