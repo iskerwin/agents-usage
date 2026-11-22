@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
-from agents_usage.render import MUTED, Line, Span, fit, line_width, pad_text, plain, text_width
+from agents_usage.render import MUTED, Line, Span, fit, line_width, pad_text, plain, plan_text, text_width
 
 
 def rgb(hex_color: str) -> str:
@@ -223,7 +223,7 @@ def _layout(snap: dict[str, Any], error: Optional[str], width: int, height: int,
     if height < account_rows + 3 + 3:
         compact: list[Line] = []
         for a in accounts:
-            line: Line = [Span(pad_text(a["agent"], 7), MUTED if a.get("stale") else None, True)]
+            line: Line = [Span(pad_text(a["agent"].capitalize(), 7), MUTED if a.get("stale") else None, True)]
             for i, w in enumerate(live(a)):
                 line += [Span(" · " if i else "", MUTED), Span(short_label(w["label"]) + " ", MUTED),
                          Span(percent(w), MUTED if a.get("stale") else LEVEL[w["level"]], True)]
@@ -232,7 +232,7 @@ def _layout(snap: dict[str, Any], error: Optional[str], width: int, height: int,
                 for st in advisors:
                     calls = st.get("calls") or []
                     tail = [Span(" · ", MUTED), Span(calls[-1]["trigger"], MUTED)] if calls else []
-                    compact.append([Span(pad_text("advisor", 8), MUTED), Span(st["advisor"], VIOLET, True),
+                    compact.append([Span(pad_text("Advisor", 8), MUTED), Span(st["advisor"], VIOLET, True),
                                     Span(f" ×{sum(st['counts'].values())}"), *tail])
         return [*compact, _spread(cost_row, [Span(age, ERROR if error else MUTED)], width)]
 
@@ -259,14 +259,14 @@ def _layout(snap: dict[str, Any], error: Optional[str], width: int, height: int,
             ])
         if not rows:
             rows = [[Span(a.get("note") or "没有额度数据", MUTED)]]
-        plan = " · ".join(p for p in (a.get("plan"), a.get("workspace")) if p)
-        out += boxes.box(a["agent"], BOX.get(a["agent"], OTHER_BOX), rows, plan,
+        plan = " · ".join(p for p in (a.get("plan") and plan_text(a["plan"]), a.get("workspace")) if p)
+        out += boxes.box(a["agent"].capitalize(), BOX.get(a["agent"], OTHER_BOX), rows, plan,
                          "过期" if stale else "", WARN)
         # The advisors of this tab's Claude sessions, under Claude's quota.
         if a["agent"] == "claude":
             for st in advisors:
                 total = sum(st["counts"].values())
-                out += boxes.box("advisor", BOX["advisor"], _advisor_rows(st, boxes.inner, label_w, meter_w, now),
+                out += boxes.box("Advisor", BOX["advisor"], _advisor_rows(st, boxes.inner, label_w, meter_w, now),
                                  f"{st['main']} → {st['advisor']}", f"×{total}" if total else "")
 
     out += boxes.box("费用", BOX["cost"], [cost_row], "", age, ERROR if error else TITLE)

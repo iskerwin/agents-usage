@@ -42,7 +42,7 @@ def test_every_row_spans_the_pane_exactly(width, height):
 
 def test_boxes_per_agent_then_cost_then_tasks():
     text = [plain(line) for line in build_pane(snapshot(), None, 38, 30, NOW)]
-    assert text[0].startswith("╭─┐claude┌") and text[0].rstrip().endswith("┐pro┌─╮")
+    assert text[0].startswith("╭─┐Claude┌") and text[0].rstrip().endswith("┐Pro┌─╮")
     assert any(" Fable 7d " in t and "15%!!" in t for t in text)
     # A window past its reset is gone; a stale account says so and why.
     assert not any("│ 7d " in t for t in text)
@@ -58,7 +58,7 @@ def test_boxes_per_agent_then_cost_then_tasks():
 
 def test_a_short_pane_folds_to_a_line_per_agent():
     text = [plain(line).rstrip() for line in build_pane(snapshot(), "boom", 38, 6, NOW)]
-    assert text[0] == "claude 5h 80% · Fable 7d 15%"
+    assert text[0] == "Claude 5h 80% · Fable 7d 15%"
     assert text[2].endswith("刷新失败")
 
 

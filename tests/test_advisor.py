@@ -161,12 +161,12 @@ def snapshot():
 
 def test_the_advisor_box_sits_under_claudes():
     text = [plain(line) for line in build_pane(snapshot(), None, 40, 30, NOW, [state()])]
-    top = next(i for i, t in enumerate(text) if "┐advisor┌" in t)
-    assert "┐claude┌" in text[top - 3] and "┐Opus 5.5 → Fable┌" in text[top]
+    top = next(i for i, t in enumerate(text) if "┐Advisor┌" in t)
+    assert "┐Claude┌" in text[top - 3] and "┐Opus 5.5 → Fable┌" in text[top]
     assert "○ idle" in text[top + 1] and text[top + 1].rstrip().endswith("plan 3.2s 12s │")
     assert [t.split()[1] for t in text[top + 2:top + 5]] == ["plan", "error", "done"]
     assert "75%" in text[top + 2] and "┘×4└" in text[top + 5]
-    assert "┐codex┌" in text[top + 6]
+    assert "┐Codex┌" in text[top + 6]
 
 
 def test_a_busy_or_quiet_advisor_says_so_and_check_ins_get_a_row():
@@ -180,7 +180,7 @@ def test_a_busy_or_quiet_advisor_says_so_and_check_ins_get_a_row():
 
 def test_a_short_pane_gives_the_advisor_a_line():
     text = [plain(line).rstrip() for line in build_pane(snapshot(), None, 40, 6, NOW, [state()])]
-    assert text[1] == "advisor Fable ×4 · plan"
+    assert text[1] == "Advisor Fable ×4 · plan"
 
 
 def test_an_advisor_set_but_never_run_still_shows(tmp_path, monkeypatch):
