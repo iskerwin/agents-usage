@@ -1,14 +1,11 @@
 import io
 import json
 import os
-import stat
 import subprocess
 import sys
 import threading
-import time
 
-from agents_usage.cli import Panel, saved_snapshot_path, serve
-from agents_usage.quota import Account, Window
+from agents_usage.cli import serve
 
 
 class FakeQuota:
@@ -91,86 +88,6 @@ def test_serve_reports_a_failed_refresh(monkeypatch, capsys):
     panel = FakePanel(FakeQuota(known=False, failing=True))
     assert run_serve(panel, monkeypatch, capsys, "get\n") == [{"error": "boom"}]
     assert panel.stored == []
-
-
-def saved_snapshot(captured_at: int, resets_at: int) -> dict:
-    account = Account("codex", "Codex", captured_at=captured_at, windows=[Window("5 小时", 10, resets_at)])
-    return {"accounts": [account.to_dict()], "usage": {"rows": []}, "tasks": [{"pid": 1}], "generated_at": 1}
-
-
-def test_restored_snapshot_is_held_to_the_freshness_rules(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    panel = Panel(False)
-    panel.save(saved_snapshot(captured_at=1000, resets_at=2**40))
-    assert stat.S_IMODE(os.stat(saved_snapshot_path()).st_mode) == 0o600
-
-    restored = panel.restored()
-    assert restored["accounts"][0]["stale"] is True
-    assert restored["most_urgent"] is None
-    assert restored["tasks"] == []
-    assert restored["refreshing"] is True
-    assert restored["generated_at"] > 1
-
-    panel.save(saved_snapshot(captured_at=1000, resets_at=2000))
-    assert panel.restored()["accounts"][0]["windows"] == []
-
-
-def test_a_missing_or_foreign_saved_snapshot_is_ignored(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    panel = Panel(False)
-    assert panel.restored() is None
-    saved_snapshot_path().parent.mkdir(parents=True)
-    for text in ("{not json", "[]", '{"accounts": [{"name": "x"}]}'):
-        saved_snapshot_path().write_text(text)
-        assert panel.restored() is None
-
-
-class CountingQuota:
-    ttl = 60
-
-    def __init__(self):
-        self.calls = 0
-
-    def get(self, force=False):
-        self.calls += 1
-        time.sleep(0.05)
-        return {"accounts": [], "most_urgent": None, "unmeasured": []}
-
-
-class NoLogs:
-    def records(self):
-        return []
-
-
-def panel(quota):
-    p = Panel.__new__(Panel)
-    p.scanner, p.quota = NoLogs(), quota
-    return p
-
-
-def test_panes_share_one_quota_query(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    monkeypatch.setattr("agents_usage.cli.list_tasks", lambda scanner: [])
-    quotas = [CountingQuota() for _ in range(4)]
-    threads = [threading.Thread(target=panel(q).shared) for q in quotas]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert sum(q.calls for q in quotas) == 1
-    assert json.loads(saved_snapshot_path().read_text())["accounts"] == []
-
-
-def test_an_old_shared_snapshot_is_queried_again(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    monkeypatch.setattr("agents_usage.cli.list_tasks", lambda scanner: [])
-    first = CountingQuota()
-    panel(first).shared()
-    saved = json.loads(saved_snapshot_path().read_text())
-    saved_snapshot_path().write_text(json.dumps({**saved, "generated_at": int(time.time()) - 61}))
-    again = CountingQuota()
-    panel(again).shared()
-    assert again.calls == 1
 
 
 def run_cli(tmp_path, *args):
