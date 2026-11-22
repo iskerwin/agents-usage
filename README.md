@@ -4,7 +4,7 @@ Claude Code、Codex、Grok 还剩多少额度，什么时候重置。
 
 macOS 菜单栏 app，背后是只依赖 Python 标准库的 `agents-usage` 命令。
 
-`--json` 在一分钟内多个进程共用一次配额查询，其余的读 `~/.cache/agents-usage/snapshot.json`。Rex 里的侧边面板是单独的 [rex-agents](https://github.com/iskerwin/rex-agents)，它读的就是这份快照。
+`--json` 在一分钟内多个进程共用一次配额查询，其余的读 `~/.cache/agents-usage/snapshot.json`。
 
 ## macOS 菜单栏
 
@@ -52,7 +52,7 @@ printf '%s' "$input" | agents-usage capture-claude
 
 快照只保存 `rate_limits`，写入 `~/.cache/agents-usage/claude-statusline.json`（权限 0600）。超过 10 分钟会标记为过期，只在 Claude Code 回复时更新。
 
-**`--claude-live`（实时，需要读取 token）。** 读取 Claude Code 保存的 OAuth token（`~/.claude/.credentials.json` 或 macOS 钥匙串，可能弹出授权），调用 `/usage` 使用的接口。该接口未公开，可能随时变化，并且限流严格，所以每 60 秒最多调用一次。token 只保存在内存中，只发送给 `api.anthropic.com`。
+**`--claude-live`（实时，需要读取 token）。** 读取 Claude Code 保存的 OAuth token（`~/.claude/.credentials.json` 或 macOS 钥匙串，可能弹出授权），调用 `/usage` 使用的接口。该接口未公开，可能随时变化，并且限流严格，所以每 60 秒最多调用一次；收到 HTTP 429 后间隔翻倍，最长 15 分钟，或按 `Retry-After`。同样调用这个接口的其他工具共用这个限额。token 只保存在内存中，只发送给 `api.anthropic.com`。
 
 ## 接入 Grok 配额
 

@@ -337,3 +337,27 @@ def test_fresh_live_wins_over_a_newer_snapshot(monkeypatch):
     assert account.source == "Claude OAuth 用量接口" and "每周 (Fable)" in [w.label for w in account.windows]
     claude._last_live = (claude._last_live[0] - quota.STALE_AFTER_SECONDS - 1, claude._last_live[1])
     assert claude.query()[0].source == "Claude statusLine 快照"
+
+
+def test_backoff_follows_retry_after_else_doubles_within_bounds():
+    assert quota.backoff(60, None) == 120
+    assert quota.backoff(60, "300") == 300
+    assert quota.backoff(600, None) == quota.CLAUDE_MAX_BACKOFF_SECONDS
+    assert quota.backoff(60, "soon") == 120
+
+
+def test_a_rate_limited_endpoint_is_asked_less_often(monkeypatch):
+    calls = []
+    clock = [1_000_000.0]
+    monkeypatch.setattr(quota.time, "time", lambda: clock[0])
+    monkeypatch.setattr(quota, "_claude_token", lambda: "tok")
+    def limited(token):
+        calls.append(clock[0])
+        raise http_error(429)
+    monkeypatch.setattr(quota, "_fetch_claude_live", limited)
+    claude = ClaudeQuota(live=True)
+    for _ in range(10):
+        claude.query()
+        clock[0] += 61
+    # Each wait twice the last after a 429: three calls in ten minutes, not ten.
+    assert len(calls) == 3 and calls[1] - calls[0] >= 120 and calls[2] - calls[1] >= 240

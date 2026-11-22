@@ -45,6 +45,8 @@ LOW_MAX_LEFT = 40.0
 CRITICAL_MAX_LEFT = 20.0
 STALE_AFTER_SECONDS = 600
 CLAUDE_MIN_REFRESH_SECONDS = 60
+# After HTTP 429 the wait doubles up to this, or is what Retry-After says.
+CLAUDE_MAX_BACKOFF_SECONDS = 900
 CODEX_TIMEOUT_SECONDS = 12.0
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -378,11 +380,22 @@ def _fetch_claude_live(token: str) -> Any:
         return json.load(response)
 
 
+def backoff(wait: float, retry_after: Optional[str]) -> float:
+    """The wait after a 429: what Retry-After says in seconds, else twice the
+    last, from one minute up to CLAUDE_MAX_BACKOFF_SECONDS."""
+    try:
+        asked = float(retry_after) if retry_after else 0.0
+    except ValueError:
+        asked = 0.0
+    return min(max(asked, wait * 2, CLAUDE_MIN_REFRESH_SECONDS), CLAUDE_MAX_BACKOFF_SECONDS)
+
+
 class ClaudeQuota:
     def __init__(self, live: bool) -> None:
         self.live = live
         self._last_live: Optional[tuple[int, list[Window]]] = None
         self._last_attempt = 0.0
+        self._wait = CLAUDE_MIN_REFRESH_SECONDS
         self._last_problem: Optional[str] = None
         self._identity: tuple[float, Optional[str], Optional[str]] = (0.0, None, None)
 
@@ -404,7 +417,7 @@ class ClaudeQuota:
     def _refresh_live(self) -> None:
         # The endpoint rate-limits aggressively, so this interval also holds
         # for forced refreshes.
-        if time.time() - self._last_attempt < CLAUDE_MIN_REFRESH_SECONDS:
+        if time.time() - self._last_attempt < self._wait:
             return
         self._last_attempt = time.time()
         try:
@@ -415,8 +428,11 @@ class ClaudeQuota:
             windows = parse_claude_live(_fetch_claude_live(token))
             self._last_live = (int(time.time()), windows)
             self._last_problem = None
+            self._wait = CLAUDE_MIN_REFRESH_SECONDS
         except urllib.error.HTTPError as exc:
             self._last_problem = f"用量接口返回 HTTP {exc.code}"
+            if exc.code == 429:
+                self._wait = backoff(self._wait, exc.headers.get("Retry-After") if exc.headers else None)
         except Exception as exc:  # the message cannot contain the token: it is only ever in a header
             self._last_problem = f"读取实时配额失败（{type(exc).__name__}）"
 

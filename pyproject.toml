@@ -1,7 +1,7 @@
 [project]
 name = "agents-usage"
 version = "0.1.0"
-description = "macOS menu bar app for the quota and token usage of your AI coding agents"
+description = "macOS menu bar app for the quota, cost and running tasks of Claude Code, Codex and Grok"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
