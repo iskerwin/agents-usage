@@ -1,5 +1,7 @@
 # agents-usage
 
+English | [简体中文](README.zh-CN.md)
+
 How much quota Claude Code, Codex and Grok have left, and when it resets, in the macOS menu bar.
 
 The app runs the `agents-usage` command, which reads the data through [agents-meter](https://github.com/iskerwin/agents-meter), a public library that uses the Python standard library only.
