@@ -159,11 +159,14 @@ def test_watch_fills_the_screen_and_reports_failure_on_the_last_row(height):
     lines = compose_watch(snapshot(), "boom", ViewOptions(), 73, height)
     assert len(lines) == height
     assert "boom" in plain(lines[-1])
-    assert plain(compose_watch(snapshot(), None, ViewOptions(), 73, height)[-1]) == ""
+    assert plain(compose_watch(snapshot(), None, ViewOptions(), 73, height)[-1]) == " " * 72
 
 
 def test_watch_says_when_it_has_nothing_yet():
-    assert [plain(line) for line in compose_watch(None, None, ViewOptions(), 73, 3)] == ["读取中", "", ""]
+    lines = compose_watch(None, None, ViewOptions(), 73, 3)
+    assert [plain(line).rstrip() for line in lines] == ["读取中", "", ""]
+    # Every row spans the screen but the last column, which would wrap on some terminals.
+    assert {line_width(line) for line in lines} == {72}
 
 
 def run_cli(tmp_path, *args):

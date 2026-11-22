@@ -28,6 +28,8 @@ HIDE_CURSOR, SHOW_CURSOR = "\x1b[?25l", "\x1b[?25h"
 ENTER_ALT, LEAVE_ALT = "\x1b[?1049h", "\x1b[?1049l"
 
 Fetch = Callable[..., dict[str, Any]]
+# What a frame shows: the snapshot, the last refresh's error, width, height.
+Compose = Callable[[Optional[dict[str, Any]], Optional[str], int, int], list[Line]]
 
 
 def _write(text: str) -> None:
@@ -48,7 +50,7 @@ def compose_watch(snapshot: Optional[dict[str, Any]], error: Optional[str], opts
     view = replace(opts, width=min(width - 1, MAX_WIDTH))
     body = build_view(snapshot, view)[:usable] if snapshot else [[Span("读取中", MUTED)]]
     footer: Line = [Span(f"刷新失败：{error}", CRITICAL, True)] if error else []
-    return [*body, *[[] for _ in range(usable - len(body))], footer]
+    return [fit(line, width - 1) for line in [*body, *[[] for _ in range(usable - len(body))], footer]]
 
 
 class _CbreakInput:
@@ -75,8 +77,11 @@ class _CbreakInput:
         return sys.stdin.read(1)
 
 
-def watch(fetch: Fetch, opts: ViewOptions, color: bool, interval: int) -> None:
-    state: dict[str, Any] = {"snapshot": None, "error": None}
+def watch(fetch: Fetch, compose: Compose, color: bool, interval: int,
+          initial: Optional[dict[str, Any]] = None) -> None:
+    """Redraws `compose`'s rows until q, refreshing every `interval` seconds.
+    `initial` is shown until the first refresh lands."""
+    state: dict[str, Any] = {"snapshot": initial, "error": None}
     stop = threading.Event()
 
     def worker() -> None:
@@ -104,13 +109,14 @@ def watch(fetch: Fetch, opts: ViewOptions, color: bool, interval: int) -> None:
                 if keys.pressed() in ("q", "Q", "\x03"):
                     return
                 width, height = terminal_size()
-                lines = compose_watch(state["snapshot"], state["error"], opts, width, height)
-                rendered = [to_ansi(fit(line, width - 1), color) for line in lines]
+                rendered = [to_ansi(line, color) for line in compose(state["snapshot"], state["error"], width, height)]
                 if len(rendered) != len(shown):
                     shown = [""] * len(rendered)
                     _write("\x1b[2J")
-                # Rewrite changed lines only: no flicker, little output.
-                out = [f"\x1b[{i + 1};1H\x1b[0m{text}\x1b[K" for i, text in enumerate(rendered) if text != shown[i]]
+                # Rewrite changed lines only: no flicker, little output. The
+                # line is cleared before it is written: clearing after would
+                # erase the last column of a line that fills the width.
+                out = [f"\x1b[{i + 1};1H\x1b[0m\x1b[2K{text}" for i, text in enumerate(rendered) if text != shown[i]]
                 if out:
                     _write("".join(out))
                 shown = rendered

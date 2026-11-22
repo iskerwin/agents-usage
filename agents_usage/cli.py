@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from agents_usage import __version__
 from agents_usage.logs import Scanner, rollup
@@ -17,7 +19,9 @@ from agents_usage.quota import (QuotaService, account_from_dict, age_account, ca
                                 summarize, timezone_name, write_private)
 from agents_usage.render import MAX_WIDTH, METRICS, ViewOptions, build_view, to_ansi
 from agents_usage.tasks import list_tasks
-from agents_usage.tui import terminal_size, watch
+from agents_usage.advisor import AdvisorFeed
+from agents_usage.pane import build_pane
+from agents_usage.tui import compose_watch, terminal_size, watch
 
 MIN_WATCH_SECONDS = 5
 
@@ -50,16 +54,50 @@ class Panel:
     def save(self, snapshot: dict[str, Any]) -> None:
         write_private(saved_snapshot_path(), json.dumps(snapshot))
 
-    def restored(self) -> Optional[dict[str, Any]]:
-        """The last run's snapshot, to show while this run catches up, under the
-        same freshness rules. Tasks are left out: their processes may be gone."""
+    def _saved(self) -> Optional[dict[str, Any]]:
+        """The last saved snapshot, its quotas under the freshness rules again."""
         now = int(time.time())
         try:
             saved = json.loads(saved_snapshot_path().read_text())
             accounts = [age_account(account_from_dict(a), now) for a in saved["accounts"]]
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
-        return {**saved, **summarize(accounts), "generated_at": now, "tasks": [], "refreshing": True}
+        return {**saved, **summarize(accounts), "generated_at": now, "captured_at": saved.get("generated_at", 0)}
+
+    def restored(self) -> Optional[dict[str, Any]]:
+        """The last run's snapshot, to show while this run catches up, under the
+        same freshness rules. Tasks are left out: their processes may be gone."""
+        saved = self._saved()
+        if saved is None:
+            return None
+        saved.pop("captured_at")
+        return {**saved, "tasks": [], "refreshing": True}
+
+    def shared(self) -> dict[str, Any]:
+        """A snapshot whose quotas every process shares: the saved one while it
+        is younger than the quota TTL, else a fresh one, saved for the others.
+        Claude's live quota allows one call a minute, and each pane is a process
+        of its own. The lock makes the others wait for that one call rather than
+        make their own. Logs and tasks are this process's own and always current."""
+        with _locked(cache_dir() / "snapshot.lock"):
+            saved = self._saved()
+            if saved is not None and saved["generated_at"] - saved["captured_at"] < self.quota.ttl:
+                quota = {k: saved[k] for k in ("accounts", "most_urgent", "unmeasured")}
+                return self._build(quota)
+            snapshot = self.snapshot()
+            self.save(snapshot)
+            return snapshot
+
+
+@contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(path, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def saved_snapshot_path() -> Path:
@@ -89,6 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "refreshing 为 true 表示配额刷新完后还会再输出一行）")
     parser.add_argument("--watch", type=positive_int, nargs="?", const=60, metavar="秒",
                         help="全屏持续刷新（默认每 60 秒），按 q 退出")
+    parser.add_argument("--pane", action="store_true",
+                        help="窄面板视图，放在 agent 旁边持续刷新（每 60 秒，多个面板共用一次查询），按 q 退出")
     parser.add_argument("--days", type=positive_int, default=7, help="统计最近几天（默认 7）")
     parser.add_argument("--agent", choices=["all", "claude", "codex", "grok"], default="all")
     parser.add_argument("--metric", choices=list(METRICS), default="billable",
@@ -186,11 +226,18 @@ def main() -> int:
     width, _ = terminal_size()
     opts = ViewOptions(width=min(width, MAX_WIDTH), days=args.days, agent=args.agent, metric=args.metric,
                        projects=args.projects, unicode=supports_unicode())
-    if args.watch is not None:
+    if args.watch is not None or args.pane:
         if not sys.stdout.isatty():
-            print("--watch 需要在交互式终端中运行", file=sys.stderr)
+            print(f"{'--pane' if args.pane else '--watch'} 需要在交互式终端中运行", file=sys.stderr)
             return 2
-        watch(panel.snapshot, opts, color, max(args.watch, MIN_WATCH_SECONDS))
+        if args.pane:
+            advisors = AdvisorFeed()
+            watch(lambda force: panel.shared(),
+                  lambda snap, error, w, h: build_pane(snap, error, w, h, int(time.time()), advisors()),
+                  color, panel.quota.ttl, initial=panel.restored())
+        else:
+            watch(panel.snapshot, lambda snap, error, w, h: compose_watch(snap, error, opts, w, h),
+                  color, max(args.watch, MIN_WATCH_SECONDS))
         return 0
     # Reading the quotas can take seconds, and a silent terminal looks stuck.
     waiting = sys.stderr.isatty() and sys.stdout.isatty()
