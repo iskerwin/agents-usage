@@ -100,7 +100,7 @@ public func percentText(_ percent: Double) -> String {
     "\(Int(percent.rounded()))%"
 }
 
-/// Mirrors `compact` in render.py.
+/// Token counts as 999, 1.2K, 34.5M: three significant digits at most.
 public func compactText(_ n: Int) -> String {
     for (size, unit) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] where Double(n) >= size {
         let v = Double(n) / size

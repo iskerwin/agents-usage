@@ -2,8 +2,10 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import threading
+import time
 
 from agents_usage.cli import Panel, saved_snapshot_path, serve
 from agents_usage.quota import Account, Window
@@ -121,3 +123,61 @@ def test_a_missing_or_foreign_saved_snapshot_is_ignored(monkeypatch, tmp_path):
     for text in ("{not json", "[]", '{"accounts": [{"name": "x"}]}'):
         saved_snapshot_path().write_text(text)
         assert panel.restored() is None
+
+
+class CountingQuota:
+    ttl = 60
+
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, force=False):
+        self.calls += 1
+        time.sleep(0.05)
+        return {"accounts": [], "most_urgent": None, "unmeasured": []}
+
+
+class NoLogs:
+    def records(self):
+        return []
+
+
+def panel(quota):
+    p = Panel.__new__(Panel)
+    p.scanner, p.quota = NoLogs(), quota
+    return p
+
+
+def test_panes_share_one_quota_query(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr("agents_usage.cli.list_tasks", lambda scanner: [])
+    quotas = [CountingQuota() for _ in range(4)]
+    threads = [threading.Thread(target=panel(q).shared) for q in quotas]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(q.calls for q in quotas) == 1
+    assert json.loads(saved_snapshot_path().read_text())["accounts"] == []
+
+
+def test_an_old_shared_snapshot_is_queried_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr("agents_usage.cli.list_tasks", lambda scanner: [])
+    first = CountingQuota()
+    panel(first).shared()
+    saved = json.loads(saved_snapshot_path().read_text())
+    saved_snapshot_path().write_text(json.dumps({**saved, "generated_at": int(time.time()) - 61}))
+    again = CountingQuota()
+    panel(again).shared()
+    assert again.calls == 1
+
+
+def run_cli(tmp_path, *args):
+    env = {**os.environ, "HOME": str(tmp_path), "CODEX_HOME": str(tmp_path / "codex"), "CLAUDE_CONFIG_DIR": str(tmp_path / "claude")}
+    return subprocess.run([sys.executable, "-m", "agents_usage.cli", *args], capture_output=True, text=True, env=env, timeout=60)
+
+
+def test_json_parses_and_bare_runs_ask_for_it(tmp_path):
+    assert json.loads(run_cli(tmp_path, "--json").stdout)["version"]
+    assert run_cli(tmp_path).returncode == 2

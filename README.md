@@ -2,20 +2,9 @@
 
 Claude Code、Codex、Grok 还剩多少额度，什么时候重置。
 
-```bash
-uv run agents-usage                  # 配额 + 最近 7 天用量
-uv run agents-usage --watch          # 全屏刷新（默认 60 秒），按 q 退出
-uv run agents-usage --watch 30       # 每 30 秒刷新
-uv run agents-usage --pane           # 窄面板视图，放在 agent 旁边，按 q 退出
-uv run agents-usage --days 30        # 统计最近 30 天
-uv run agents-usage --agent codex    # claude / codex / grok / all
-uv run agents-usage --metric total   # billable（默认）/ total / output
-uv run agents-usage --projects       # 同时显示项目明细
-uv run agents-usage --json           # 完整数据，给脚本和 agent 用
-uv run --group dev pytest
-```
+macOS 菜单栏 app，背后是只依赖 Python 标准库的 `agents-usage` 命令。
 
-`uv tool install .` 后可以在任意目录直接运行 `agents-usage`。终端视图使用终端自身的配色，`--no-color` 或 `NO_COLOR` 关闭颜色，输出到管道时是纯文本。只依赖 Python 标准库。
+`--json` 在一分钟内多个进程共用一次配额查询，其余的读 `~/.cache/agents-usage/snapshot.json`。Rex 里的侧边面板是单独的 [rex-agents](https://github.com/iskerwin/rex-agents)，它读的就是这份快照。
 
 ## macOS 菜单栏
 
@@ -26,6 +15,8 @@ uv run --group dev pytest
 ```bash
 uv tool install --force --reinstall .  # app 调用已安装的 agents-usage，Python 代码改动后要重新运行
 macos/build.sh                         # 构建到 ~/Applications，也可以传入其他目录
+agents-usage --json                    # 一次完整快照，给脚本和其他面板用
+uv run --group dev pytest
 macos/test.sh
 ```
 
@@ -35,18 +26,6 @@ app 每 5 分钟刷新一次，面板打开时每 15 秒刷新一次，电脑唤
 
 运行任务来自终端里的 agent 进程：Claude Code 用它自己记录的状态，Codex 和 Grok 在会话文件 2 分钟内有写入时算运行中。任务标题是 agent 生成的会话短标题，只显示在本机。
 
-## Rex 面板
-
-`--pane` 是给窄面板用的视图：每个 agent 一个框，每个额度窗口一行，依次是剩余量的长条、剩余百分比和距重置的时间，长条上亮的竖线是匀速用量此刻应剩的位置；下面是今日和本月费用，框底标着数据是多久前的；最后是运行中的任务，一直排到面板底部。同一个标签页里有开着 advisor 的 Claude Code 会话时，claude 框下面多一个 advisor 框：主模型和 advisor、主模型在不在跑、最近一次调用，以及各个时机（定方案前、同一个错误两次、收尾前、中途确认）的调用次数。这些来自那个会话自己的日志，时机的判断和 [advisor-live](https://github.com/iskerwin/advisor-live) 相同，不需要装它。面板矮时每个 agent 收成一行。每 60 秒刷新一次。开着几个面板时，同一分钟内只查询一次配额，其余面板读 `~/.cache/agents-usage/snapshot.json`。
-
-`rex/init.lua` 是 Rex 插件，在 Rex 的配置（`~/.config/rex/init.lua`）里加载：
-
-```lua
-dofile("/path/to/agents-usage/rex/init.lua").setup({ bin = { "/path/to/agents-usage" }, width = 1/3 })
-```
-
-按 shift+cmd+u，或在命令面板里运行 “Toggle Agents Panel”，会在当前标签页右侧打开或关闭这个面板，和面板里跑的是 Claude Code、Codex、Grok 还是普通 shell 无关。面板占标签页宽度的 `width`（默认 1/3，想窄一些可以设成 1/4）。`setup` 的 `key` 可以换快捷键，`key = false` 不绑定。面板显示的是本机的用量，所以只用于本机的会话。面板运行 `agents-usage --pane --claude-live`。
-
 ## 数据来源
 
 | 内容 | Claude Code | Codex | Grok |
@@ -55,7 +34,6 @@ dofile("/path/to/agents-usage/rex/init.lua").setup({ bin = { "/path/to/agents-us
 | 配额窗口 | statusLine 快照，或 `--claude-live` | `codex app-server`，失败时用会话日志中最新的记录 | Grok CLI 用量接口 |
 
 - 只读取时间、模型、工作目录、Token 数和 agent 生成的会话标题，不读取消息内容。
-- Rex 面板的 advisor 框另外读取 Claude Code 日志里的 advisor 调用、工具名和工具是否失败；失败结果只读前 80 个字符，用来判断是不是同一个错误，只留在内存里。
 - 历史范围取决于 agent 保留日志的时长。Claude Code 默认会清理旧日志。
 - 同一响应的重复日志行、恢复或分叉会话的重放记录都会去重。
 - 不含缓存读取时，三者口径一致：Codex 和 Grok 的输入 Token 已包含缓存，这里先拆开再统计。

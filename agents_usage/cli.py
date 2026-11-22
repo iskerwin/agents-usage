@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
-import os
 import sys
 import threading
 import time
@@ -17,14 +16,7 @@ from agents_usage import __version__
 from agents_usage.logs import Scanner, rollup
 from agents_usage.quota import (QuotaService, account_from_dict, age_account, cache_dir, capture_claude_statusline,
                                 summarize, timezone_name, write_private)
-from agents_usage.render import MAX_WIDTH, METRICS, ViewOptions, build_view, to_ansi
 from agents_usage.tasks import list_tasks
-from agents_usage.advisor import AdvisorFeed
-from agents_usage.pane import build_pane
-from agents_usage.tui import compose_watch, terminal_size, watch
-
-MIN_WATCH_SECONDS = 5
-
 
 class Panel:
     def __init__(self, claude_live: bool) -> None:
@@ -104,40 +96,13 @@ def saved_snapshot_path() -> Path:
     return cache_dir() / "snapshot.json"
 
 
-def wants_color(no_color: bool) -> bool:
-    return not (no_color or "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb" or not sys.stdout.isatty())
-
-
-def supports_unicode() -> bool:
-    return (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "").startswith("utf")
-
-
-def positive_int(text: str) -> int:
-    value = int(text)
-    if value < 1:
-        raise argparse.ArgumentTypeError("必须是正整数")
-    return value
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agents-usage", description="AI coding agent 用量面板")
+    parser = argparse.ArgumentParser(prog="agents-usage", description="AI coding agent 的额度、用量和任务，给 macOS 菜单栏 app 用")
     parser.add_argument("command", nargs="?", choices=["capture-claude", "serve"],
                         help="capture-claude：从 stdin 读取 statusLine JSON 并保存配额快照；"
                              "serve：常驻进程，stdin 每收到一行就输出 JSON 快照（line 为 force 时强制刷新配额；"
                              "refreshing 为 true 表示配额刷新完后还会再输出一行）")
-    parser.add_argument("--watch", type=positive_int, nargs="?", const=60, metavar="秒",
-                        help="全屏持续刷新（默认每 60 秒），按 q 退出")
-    parser.add_argument("--pane", action="store_true",
-                        help="窄面板视图，放在 agent 旁边持续刷新（每 60 秒，多个面板共用一次查询），按 q 退出")
-    parser.add_argument("--days", type=positive_int, default=7, help="统计最近几天（默认 7）")
-    parser.add_argument("--agent", choices=["all", "claude", "codex", "grok"], default="all")
-    parser.add_argument("--metric", choices=list(METRICS), default="billable",
-                        help="billable：不含缓存读取（默认）；total：全部 Token；output：仅输出")
-    parser.add_argument("--projects", action="store_true", help="同时显示项目明细")
-    parser.add_argument("--json", action="store_true", help="输出 JSON 后退出")
-    parser.add_argument("--no-color", action="store_true", help="不使用颜色")
-    # There are no animations left. Still accepted, so existing scripts keep working.
-    parser.add_argument("--no-anim", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--json", action="store_true", help="输出一次 JSON 快照后退出（一分钟内多个进程共用一次配额查询）")
     parser.add_argument("--claude-live", action="store_true",
                         help="读取 Claude Code 的 OAuth token（macOS 上可能弹出钥匙串授权）以查询实时配额")
     parser.add_argument("--version", action="version", version=__version__)
@@ -215,41 +180,13 @@ def main() -> int:
     if args.command == "serve":
         return serve(Panel(args.claude_live))
 
-    # A locale that cannot encode the labels must not crash the view.
-    sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
-    panel = Panel(args.claude_live)
-    if args.json:
-        print(json.dumps(panel.snapshot(), ensure_ascii=False, indent=2))
-        return 0
-
-    color = wants_color(args.no_color)
-    width, _ = terminal_size()
-    opts = ViewOptions(width=min(width, MAX_WIDTH), days=args.days, agent=args.agent, metric=args.metric,
-                       projects=args.projects, unicode=supports_unicode())
-    if args.watch is not None or args.pane:
-        if not sys.stdout.isatty():
-            print(f"{'--pane' if args.pane else '--watch'} 需要在交互式终端中运行", file=sys.stderr)
-            return 2
-        if args.pane:
-            advisors = AdvisorFeed()
-            watch(lambda force: panel.shared(),
-                  lambda snap, error, w, h: build_pane(snap, error, w, h, int(time.time()), advisors()),
-                  color, panel.quota.ttl, initial=panel.restored())
-        else:
-            watch(panel.snapshot, lambda snap, error, w, h: compose_watch(snap, error, opts, w, h),
-                  color, max(args.watch, MIN_WATCH_SECONDS))
-        return 0
-    # Reading the quotas can take seconds, and a silent terminal looks stuck.
-    waiting = sys.stderr.isatty() and sys.stdout.isatty()
-    if waiting:
-        print("读取中\r", end="", file=sys.stderr, flush=True)
-    snapshot = panel.snapshot()
-    if waiting:
-        print("\x1b[K", end="", file=sys.stderr, flush=True)
-    for line in build_view(snapshot, opts):
-        print(to_ansi(line, color))
+    if not args.json:
+        build_parser().print_usage(sys.stderr)
+        return 2
+    # Many readers ask at once (an app, a pane in every tab): they share one
+    # quota query a minute.
+    print(json.dumps(Panel(args.claude_live).shared(), ensure_ascii=False, indent=2))
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
