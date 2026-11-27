@@ -222,7 +222,7 @@ struct QuotaRow: View {
     var stale = false
 
     var body: some View {
-        let label = windowRowLabel(window.label)
+        let label = window.rowLabel
         let pace = window.evenPaceLeft(now: now)
         let percent = levelMark(window.level) + percentText(window.leftPercent)
         let reset = window.resetsAt.map { durationText(seconds: $0 - now) } ?? "—"
@@ -233,7 +233,7 @@ struct QuotaRow: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .frame(width: Column.windowLabel, alignment: .leading)
-                .help(shortWindowLabel(window.label))
+                .help(window.fullLabel)
             QuotaBar(fraction: window.leftPercent / 100, color: window.level == "ok" ? Palette.bar : Palette.level(window.level), pace: pace.map { $0 / 100 })
             Text(percent)
                 .font(.system(size: 13, weight: .semibold).monospacedDigit())

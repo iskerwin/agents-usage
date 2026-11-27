@@ -170,10 +170,6 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
     #expect(moneyText(0.001) == "<$0.01")
     #expect(moneyText(222.33) == "$222")
     #expect(moneyText(1234.4) == "$1,234")
-    #expect(shortWindowLabel("5 小时") == "5h")
-    #expect(shortWindowLabel("每周 (Opus)") == "7d (Opus)")
-    #expect(windowRowLabel("每周 (Fable)") == "Fable")
-    #expect(windowRowLabel("5 小时") == "5h")
     #expect(parseBudget(" $100 ") == 100)
     #expect(parseBudget("0") == nil)
     #expect(parseBudget("abc") == nil)
@@ -246,27 +242,39 @@ private func costRow(_ date: String, _ agent: String, _ model: String, fresh: In
 
 @Test func modelWindowKeepsItsPaceNotch() throws {
     let now = 1_793_900_000
-    let fable = try window("每周 (Fable)", left: 82, resetsAt: now + 3 * 86400)
+    let fable = try window("每周 (Fable)", seconds: week, model: "Fable", left: 82, resetsAt: now + 3 * 86400)
     #expect(fable.evenPaceLeft(now: now) == Double(3) / 7 * 100)
+    #expect(fable.rowLabel == "Fable" && fable.fullLabel == "7d (Fable)")
 }
 
-private func window(_ label: String, left: Double, resetsAt: Int? = nil) throws -> Snapshot.QuotaWindow {
-    let reset = resetsAt.map(String.init) ?? "null"
+private let fiveHours = 5 * 3600
+private let week = 7 * 86400
+
+private func window(_ label: String, seconds: Int?, model: String? = nil, left: Double,
+                    resetsAt: Int? = nil) throws -> Snapshot.QuotaWindow {
     let json = """
     {"generated_at":1,"accounts":[{"agent":"claude","name":"c","stale":false,"windows":[
-      {"label":"\(label)","left_percent":\(left),"level":"ok","resets_at":\(reset)}]}],"usage":{"rows":[]}}
+      {"label":"\(label)","left_percent":\(left),"level":"ok","resets_at":\(resetsAt.map(String.init) ?? "null"),
+       "seconds":\(seconds.map(String.init) ?? "null"),"model":\(model.map { "\"\($0)\"" } ?? "null")}]}],
+     "usage":{"rows":[]}}
     """
     return try Snapshot.decode(Data(json.utf8)).accounts[0].windows[0]
 }
 
-@Test func evenPaceComesFromTheLabelAndTheReset() throws {
+@Test func evenPaceComesFromTheLengthAndTheReset() throws {
     let now = 1_000_000
-    #expect(try window("5 小时", left: 50, resetsAt: now + 3600).evenPaceLeft(now: now) == 20)
-    #expect(try window("每周 (Opus)", left: 50, resetsAt: now + 7 * 43200).evenPaceLeft(now: now) == 50)
-    #expect(try window("每周", left: 50, resetsAt: nil).evenPaceLeft(now: now) == nil)
-    #expect(try window("w0", left: 50, resetsAt: now + 60).evenPaceLeft(now: now) == nil)
-    #expect(try window("5 小时", left: 50, resetsAt: now + 99999).evenPaceLeft(now: now) == 100)
-    #expect(try window("5 小时", left: 50, resetsAt: now - 60).evenPaceLeft(now: now) == 0)
+    #expect(try window("5 小时", seconds: fiveHours, left: 50, resetsAt: now + 3600).evenPaceLeft(now: now) == 20)
+    #expect(try window("每周 (Opus)", seconds: week, model: "Opus", left: 50, resetsAt: now + 7 * 43200)
+        .evenPaceLeft(now: now) == 50)
+    #expect(try window("每周", seconds: week, left: 50, resetsAt: nil).evenPaceLeft(now: now) == nil)
+    #expect(try window("5 小时", seconds: fiveHours, left: 50, resetsAt: now + 99999).evenPaceLeft(now: now) == 100)
+    #expect(try window("5 小时", seconds: fiveHours, left: 50, resetsAt: now - 60).evenPaceLeft(now: now) == 0)
+}
+
+@Test func dataFromBeforeAgentsMeterTwoShowsItsLabel() throws {
+    let old = try window("每周", seconds: nil, left: 50, resetsAt: 2_000_000)
+    #expect(old.rowLabel == "每周" && old.fullLabel == "每周" && old.evenPaceLeft(now: 1_000_000) == nil)
+    #expect(try window("5 小时", seconds: fiveHours, left: 1).rowLabel == "5h")
 }
 
 @Test func glanceFitsThreeWindowsAndKeepsTheTightest() throws {

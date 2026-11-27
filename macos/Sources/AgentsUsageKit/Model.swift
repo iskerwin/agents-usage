@@ -28,6 +28,10 @@ public struct Snapshot: Decodable {
         public let leftPercent: Double
         public let level: String
         public let resetsAt: Int?
+        /// How long the window runs, and the model a per-model allowance is for.
+        /// Both come from agents-meter 0.2; `label` is only for display.
+        public let seconds: Int?
+        public let model: String?
 
         public var id: String { label }
     }

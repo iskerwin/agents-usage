@@ -210,22 +210,29 @@ extension Snapshot.AgentTask {
 }
 
 extension Snapshot.QuotaWindow {
-    /// How long the window runs, read off its label. nil for a label that names no length.
-    var durationSeconds: Int? {
-        guard let token = shortWindowLabel(label).split(separator: " ").first, let unit = token.last,
-              let count = Int(token.dropLast()) else { return nil }
-        switch unit {
-        case "m": return count * 60
-        case "h": return count * 3600
-        case "d": return count * 86400
-        default: return nil
-        }
-    }
-
     /// The percent left if use had been even since the window began.
     func evenPaceLeft(now: Int) -> Double? {
-        guard let resetsAt, let durationSeconds, durationSeconds > 0 else { return nil }
-        return min(max(Double(resetsAt - now) / Double(durationSeconds) * 100, 0), 100)
+        guard let resetsAt, let seconds, seconds > 0 else { return nil }
+        return min(max(Double(resetsAt - now) / Double(seconds) * 100, 0), 100)
+    }
+
+    /// `5h`, `7d`; nil for data saved before agents-meter 0.2.
+    var spanText: String? {
+        guard let seconds, seconds > 0 else { return nil }
+        for (unit, size) in [("d", 86400), ("h", 3600), ("m", 60)] where seconds % size == 0 {
+            return "\(seconds / size)\(unit)"
+        }
+        return "\(seconds)s"
+    }
+
+    /// What a quota row shows in its narrow label column: `5h`, `7d`, and a
+    /// per-model window by its model alone, `Fable`.
+    public var rowLabel: String { model ?? spanText ?? label }
+
+    /// The row's tooltip: `7d (Fable)`.
+    public var fullLabel: String {
+        guard let spanText else { return label }
+        return model.map { "\(spanText) (\($0))" } ?? spanText
     }
 }
 
@@ -277,25 +284,6 @@ public func durationText(seconds: Int) -> String {
     if seconds >= 86400 { return "\(seconds / 86400)d \(seconds % 86400 / 3600)h" }
     if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
     return "\(max(seconds / 60, 1))m"
-}
-
-/// What a quota row shows in its narrow label column: `5h`, `7d`, and a
-/// per-model window by its model alone, `Fable` for `每周 (Fable)`.
-public func windowRowLabel(_ label: String) -> String {
-    guard let open = label.firstIndex(of: "("), let close = label.lastIndex(of: ")"), open < close else {
-        return shortWindowLabel(label)
-    }
-    return String(label[label.index(after: open)..<close])
-}
-
-/// `5 小时` as `5h`, `每周 (Opus)` as `7d (Opus)`.
-public func shortWindowLabel(_ label: String) -> String {
-    label.replacingOccurrences(of: " 小时", with: "h")
-        .replacingOccurrences(of: " 分钟", with: "m")
-        .replacingOccurrences(of: " 天", with: "d")
-        .replacingOccurrences(of: "每周", with: "7d")
-        .replacingOccurrences(of: "每日", with: "1d")
-        .replacingOccurrences(of: "每月", with: "30d")
 }
 
 public func moneyText(_ amount: Double) -> String {
