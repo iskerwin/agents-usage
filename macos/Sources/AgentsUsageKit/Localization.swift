@@ -61,6 +61,14 @@ func localizedNote(_ note: String) -> String {
         ("读取配额失败", "Quota read failed"),
         ("Codex 会话日志", "Codex session log"),
         ("Grok CLI 用量接口", "Grok CLI usage API"),
+        ("无法读取 Grok 登录凭据", "Grok credentials unreadable"),
+        ("响应中没有配额窗口", "the response has no quota windows"),
+        ("响应格式不符", "unexpected response format"),
+        // Codex errors pass along as they came; after the longer notes above.
+        ("未登录", "not logged in"),
+        ("未返回配额", "no quota returned"),
+        (" 超时", " timed out"),
+        (" 失败", " failed"),
         ("（", " ("), ("）", ")"), ("；", "; "),
     ]
     return known.reduce(note) { $0.replacingOccurrences(of: $1.0, with: $1.1) }
